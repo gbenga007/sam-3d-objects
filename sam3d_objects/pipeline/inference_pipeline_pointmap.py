@@ -14,7 +14,6 @@ from pytorch3d.transforms import Transform3d
 from sam3d_objects.model.backbone.dit.embedder.pointmap import PointPatchEmbed
 from sam3d_objects.model.backbone.scale_head import (
     MetricScaleHead,
-    ScaleTokenProjector,
     _ScaleAugmentedEmbedderProxy,
 )
 from sam3d_objects.model.backbone.metric_scale_decoder import MetricScaleDecoder
@@ -104,7 +103,6 @@ class InferencePipelinePointMap(InferencePipeline):
         layout_post_optimization_method_GS=layout_post_optimization_method_GS,
         clip_pointmap_beyond_scale=None,
         metric_scale_head: MetricScaleHead = None,
-        scale_token_projector: ScaleTokenProjector = None,
         metric_scale_decoder: MetricScaleDecoder = None,
         **kwargs,
     ):
@@ -113,7 +111,6 @@ class InferencePipelinePointMap(InferencePipeline):
         self.layout_post_optimization_method_GS = layout_post_optimization_method_GS
         self.clip_pointmap_beyond_scale = clip_pointmap_beyond_scale
         self.metric_scale_head = metric_scale_head
-        self.scale_token_projector = scale_token_projector
         self.metric_scale_decoder = metric_scale_decoder
         super().__init__(*args, **kwargs)
 
@@ -586,14 +583,11 @@ class InferencePipelinePointMap(InferencePipeline):
         return x.squeeze(0)
 
     def _compute_scale_token(self, shape_latent, pointmap_scale, pointmap_shift):
-        """Run MetricScaleHead + ScaleTokenProjector if both are loaded."""
-        if self.metric_scale_head is None or self.scale_token_projector is None:
-            return None
-        if shape_latent is None:
+        """Run MetricScaleHead to produce a 768-dim scale conditioning token."""
+        if self.metric_scale_head is None or shape_latent is None:
             return None
         with torch.no_grad():
-            log_scale = self.metric_scale_head(shape_latent, pointmap_scale, pointmap_shift)
-            return self.scale_token_projector(log_scale)
+            return self.metric_scale_head(shape_latent, pointmap_scale, pointmap_shift)
 
     def _get_slat_backbone(self):
         """Return the SLatFlowModelTdfyWrapper that owns condition_embedder."""
