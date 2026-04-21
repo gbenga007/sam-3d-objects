@@ -12,6 +12,12 @@ from pytorch3d.renderer import look_at_view_transform
 from pytorch3d.transforms import Transform3d
 
 from sam3d_objects.model.backbone.dit.embedder.pointmap import PointPatchEmbed
+from sam3d_objects.model.backbone.scale_head import (
+    MetricScaleHead,
+    ScaleTokenProjector,
+    _ScaleAugmentedEmbedderProxy,
+)
+from sam3d_objects.model.backbone.metric_scale_decoder import MetricScaleDecoder
 from sam3d_objects.pipeline.inference_pipeline import InferencePipeline
 from sam3d_objects.data.dataset.tdfy.img_and_mask_transforms import (
     get_mask,
@@ -91,12 +97,24 @@ def compile_wrapper(
 class InferencePipelinePointMap(InferencePipeline):
 
     def __init__(
-        self, *args, depth_model, layout_post_optimization_method=layout_post_optimization, layout_post_optimization_method_GS=layout_post_optimization_method_GS, clip_pointmap_beyond_scale=None, **kwargs
+        self,
+        *args,
+        depth_model,
+        layout_post_optimization_method=layout_post_optimization,
+        layout_post_optimization_method_GS=layout_post_optimization_method_GS,
+        clip_pointmap_beyond_scale=None,
+        metric_scale_head: MetricScaleHead = None,
+        scale_token_projector: ScaleTokenProjector = None,
+        metric_scale_decoder: MetricScaleDecoder = None,
+        **kwargs,
     ):
         self.depth_model = depth_model
         self.layout_post_optimization_method = layout_post_optimization_method
         self.layout_post_optimization_method_GS = layout_post_optimization_method_GS
         self.clip_pointmap_beyond_scale = clip_pointmap_beyond_scale
+        self.metric_scale_head = metric_scale_head
+        self.scale_token_projector = scale_token_projector
+        self.metric_scale_decoder = metric_scale_decoder
         super().__init__(*args, **kwargs)
 
     def _compile(self):
@@ -448,18 +466,51 @@ class InferencePipelinePointMap(InferencePipeline):
                 # return ss_return_dict
 
             coords = ss_return_dict["coords"]
-            slat = self.sample_slat(
-                slat_input_dict,
-                coords,
-                inference_steps=stage2_inference_steps,
-                use_distillation=use_stage2_distillation,
+
+            # --- Metric scale head ---
+            # Predict log(metric_scale) from the SS latent + MoGe statistics,
+            # then inject a scale token into SLAT's cross-attention conditioning.
+            scale_token = self._compute_scale_token(
+                ss_return_dict.get("shape"),
+                ss_input_dict.get("pointmap_scale"),
+                ss_input_dict.get("pointmap_shift"),
             )
+
+            slat_backbone = self._get_slat_backbone()
+            original_embedder = None
+            if scale_token is not None and slat_backbone is not None:
+                original_embedder = slat_backbone.condition_embedder
+                slat_backbone.condition_embedder = _ScaleAugmentedEmbedderProxy(
+                    original_embedder, scale_token
+                )
+
+            try:
+                slat = self.sample_slat(
+                    slat_input_dict,
+                    coords,
+                    inference_steps=stage2_inference_steps,
+                    use_distillation=use_stage2_distillation,
+                )
+            finally:
+                if original_embedder is not None and slat_backbone is not None:
+                    slat_backbone.condition_embedder = original_embedder
             outputs = self.decode_slat(
                 slat, self.decode_formats if decode_formats is None else decode_formats
             )
             outputs = self.postprocess_slat_output(
                 outputs, with_mesh_postprocess, with_texture_baking, use_vertex_color
             )
+
+            # --- Metric scale decoder ---
+            # Predict physical [width, height, depth] in meters from the refined
+            # SLAT latent + the scale token produced by the scale head.
+            if self.metric_scale_decoder is not None and scale_token is not None:
+                metric_dims = self.metric_scale_decoder.predict_metric_dimensions(
+                    slat.feats,
+                    scale_token,
+                    slat.coords[:, 0],
+                )
+                outputs["metric_dimensions"] = metric_dims  # [batch, 3] in meters
             glb = outputs.get("glb", None)
             gs_input = outputs.get("gaussian", None)
 
@@ -533,6 +584,24 @@ class InferencePipelinePointMap(InferencePipeline):
             antialias=True,
         )  # -> (1, 3, H/4, W/4)
         return x.squeeze(0)
+
+    def _compute_scale_token(self, shape_latent, pointmap_scale, pointmap_shift):
+        """Run MetricScaleHead + ScaleTokenProjector if both are loaded."""
+        if self.metric_scale_head is None or self.scale_token_projector is None:
+            return None
+        if shape_latent is None:
+            return None
+        with torch.no_grad():
+            log_scale = self.metric_scale_head(shape_latent, pointmap_scale, pointmap_shift)
+            return self.scale_token_projector(log_scale)
+
+    def _get_slat_backbone(self):
+        """Return the SLatFlowModelTdfyWrapper that owns condition_embedder."""
+        try:
+            return self.models["slat_generator"].reverse_fn.backbone
+        except AttributeError:
+            logger.warning("Could not locate slat_generator.reverse_fn.backbone — scale token injection skipped")
+            return None
 
     def estimate_plane(self, pointmap_dict, image, ground_area_threshold=0.25, min_points=100):
         assert image.shape[-1] == 4  # rgba format
