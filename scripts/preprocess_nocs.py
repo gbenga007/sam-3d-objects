@@ -49,6 +49,7 @@ from sam3d_objects.data.dataset.metric.nocs import (
     get_metric_dims_from_mesh,
     iter_nocs_instances,
 )
+from moge_utils import load_moge, compute_pointmap_stats
 
 
 def main():
@@ -58,6 +59,7 @@ def main():
     parser.add_argument("--categories", nargs="+", default=NOCS_CATEGORIES)
     parser.add_argument("--min_mask_pixels", type=int, default=500,
                         help="Skip instances whose mask has fewer pixels than this")
+    parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
     raw_root = Path(args.raw_root)
@@ -68,9 +70,13 @@ def main():
     gt_root = raw_root / "gts" / "real_test"
     obj_models_root = raw_root / "obj_models" / "real_test"
 
+    print("Loading MoGe...")
+    moge = load_moge(device=args.device)
+
     counts: dict[str, int] = {}
     skipped_mask = 0
     skipped_dims = 0
+    skipped_moge = 0
 
     with open(out_root / "metadata.jsonl", "w") as meta_f:
         for inst in tqdm(
@@ -113,6 +119,12 @@ def main():
                 skipped_dims += 1
                 continue
 
+            # Run MoGe to get pointmap stats (metric anchor for scale head)
+            moge_stats = compute_pointmap_stats(rgba, moge, device=args.device)
+            if moge_stats is None:
+                skipped_moge += 1
+                continue
+
             uid = str(uuid.uuid4())[:12]
             img_filename = f"{uid}.png"
             Image.fromarray(rgba).save(images_dir / img_filename)
@@ -121,6 +133,8 @@ def main():
                 "uid": uid,
                 "image_path": f"images/{img_filename}",
                 "metric_dims": metric_dims.tolist(),
+                "pointmap_scale": moge_stats["pointmap_scale"],
+                "pointmap_shift": moge_stats["pointmap_shift"],
                 "category": inst["category"],
                 "source": "nocs",
                 "scene": scene,
@@ -133,6 +147,7 @@ def main():
     print(f"\nSaved {total} records")
     print(f"  Skipped (bad mask / too small): {skipped_mask}")
     print(f"  Skipped (no metric dims):       {skipped_dims}")
+    print(f"  Skipped (MoGe failed):          {skipped_moge}")
     for cat, n in sorted(counts.items()):
         print(f"  {cat:10s}: {n}")
 

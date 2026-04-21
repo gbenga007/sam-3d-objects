@@ -44,6 +44,7 @@ from sam3d_objects.data.dataset.metric.objectron import (
     iter_objectron_sequences,
     rgba_from_rgb_mask,
 )
+from moge_utils import load_moge, compute_pointmap_stats
 
 
 def main():
@@ -52,6 +53,7 @@ def main():
     parser.add_argument("--out_root", required=True)
     parser.add_argument("--categories", nargs="+", default=OBJECTRON_CATEGORIES)
     parser.add_argument("--max_per_category", type=int, default=None)
+    parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
     out_root = Path(args.out_root)
@@ -59,8 +61,12 @@ def main():
     images_dir.mkdir(parents=True, exist_ok=True)
     meta_path = out_root / "metadata.jsonl"
 
+    print("Loading MoGe...")
+    moge = load_moge(device=args.device)
+
     counts: dict[str, int] = {}
     skipped = 0
+    skipped_moge = 0
 
     with open(meta_path, "w") as meta_f:
         for seq_dir, category in tqdm(
@@ -79,6 +85,13 @@ def main():
                 continue
 
             rgba = rgba_from_rgb_mask(result["rgb"], result["mask_2d"])
+
+            # Run MoGe to get pointmap stats (metric anchor for scale head)
+            moge_stats = compute_pointmap_stats(rgba, moge, device=args.device)
+            if moge_stats is None:
+                skipped_moge += 1
+                continue
+
             uid = str(uuid.uuid4())[:12]
             img_filename = f"{uid}.png"
             Image.fromarray(rgba).save(images_dir / img_filename)
@@ -87,6 +100,8 @@ def main():
                 "uid": uid,
                 "image_path": f"images/{img_filename}",
                 "metric_dims": result["metric_dims"].tolist(),
+                "pointmap_scale": moge_stats["pointmap_scale"],
+                "pointmap_shift": moge_stats["pointmap_shift"],
                 "category": category,
                 "source": "objectron",
                 "seq_dir": str(seq_dir),
@@ -95,7 +110,9 @@ def main():
             counts[category] = counts.get(category, 0) + 1
 
     total = sum(counts.values())
-    print(f"\nSaved {total} records ({skipped} skipped) → {out_root}")
+    print(f"\nSaved {total} records → {out_root}")
+    print(f"  Skipped (bad annotation): {skipped}")
+    print(f"  Skipped (MoGe failed):    {skipped_moge}")
     for cat, n in sorted(counts.items()):
         print(f"  {cat:15s}: {n}")
 
