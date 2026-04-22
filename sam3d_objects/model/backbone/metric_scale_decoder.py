@@ -48,9 +48,11 @@ class MetricScaleDecoder(nn.Module):
         Returns:
             log_dims: [batch, 3] — log([width, height, depth] in meters)
         """
+        param_dtype = next(self.parameters()).dtype
         batch_size = scale_token.shape[0]
         device = slat_feats.device
-        dtype = slat_feats.dtype
+        dtype = param_dtype
+        slat_feats = slat_feats.to(dtype)
 
         # Mean-pool SLAT features per batch element via scatter
         pooled = torch.zeros(batch_size, slat_feats.shape[1], device=device, dtype=dtype)

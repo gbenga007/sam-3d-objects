@@ -101,10 +101,113 @@ class NOCSDataset(Dataset):
         return {
             "image": image,
             "metric_dims": np.array(rec["metric_dims"], dtype=np.float32),
+            "pointmap_scale": np.array(rec["pointmap_scale"], dtype=np.float32),
+            "pointmap_shift": np.array(rec["pointmap_shift"], dtype=np.float32),
             "category": rec["category"],
             "uid": rec["uid"],
             "source": "nocs",
         }
+
+
+class OmniNOCSReal275Dataset(Dataset):
+    """
+    Loads OmniNOCS NOCS-Real275 metadata directly.
+
+    OmniNOCS provides object annotations and per-instance masks, while the source
+    RGB frames live in the separately extracted NOCS ``real_test`` directory.
+    This dataset emits one record per object instance, using the full RGB frame
+    with the selected object as the alpha mask.
+
+    Expected layout:
+        annotations_root/
+            nocs_real275_train_metadata.json
+            nocs_real275_test_metadata.json
+            nocs_real275/test/scene_X/NNNN_instances.png
+        rgb_root/
+            scene_X/NNNN_color.png
+    """
+
+    def __init__(
+        self,
+        annotations_root: str,
+        rgb_root: str,
+        split: str = "train",
+        categories: list[str] | None = None,
+        min_mask_pixels: int = 500,
+        max_records: int | None = None,
+    ):
+        if split not in ("train", "test"):
+            raise ValueError(f"split must be 'train' or 'test', got {split!r}")
+
+        self.annotations_root = Path(annotations_root)
+        self.rgb_root = Path(rgb_root)
+        self.min_mask_pixels = min_mask_pixels
+        cats = set(categories) if categories is not None else None
+
+        meta_path = self.annotations_root / f"nocs_real275_{split}_metadata.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"OmniNOCS metadata not found: {meta_path}")
+
+        with open(meta_path) as f:
+            frames = json.load(f)
+
+        records = []
+        for frame in frames:
+            image_name = frame["image_name"]
+            for obj in frame["objects"]:
+                if cats is not None and obj["category"] not in cats:
+                    continue
+                records.append(
+                    {
+                        "image_name": image_name,
+                        "object_id": int(obj["object_id"]),
+                        "category": obj["category"],
+                        "metric_dims": obj["size"],
+                        "uid": f"{image_name.replace('/', '_')}_{obj['object_id']}",
+                    }
+                )
+                if max_records is not None and len(records) >= max_records:
+                    break
+            if max_records is not None and len(records) >= max_records:
+                break
+
+        self.records = records
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx: int) -> dict:
+        rec = self.records[idx]
+        rgb_path = self._rgb_path(rec["image_name"])
+        inst_path = self.annotations_root / f"{rec['image_name']}_instances.png"
+        if not rgb_path.exists():
+            raise FileNotFoundError(f"NOCS RGB frame not found: {rgb_path}")
+        if not inst_path.exists():
+            raise FileNotFoundError(f"OmniNOCS instance mask not found: {inst_path}")
+
+        rgb = np.array(Image.open(rgb_path).convert("RGB"), dtype=np.uint8)
+        instances = np.array(Image.open(inst_path))
+        mask = instances == rec["object_id"]
+        mask_pixels = int(mask.sum())
+
+        rgba = np.concatenate([rgb, (mask.astype(np.uint8) * 255)[..., None]], axis=-1)
+        metric_dims = np.array(rec["metric_dims"], dtype=np.float32)
+        return {
+            "image": rgba,
+            "metric_dims": metric_dims,
+            "category": rec["category"],
+            "uid": rec["uid"],
+            "source": "omninocs_nocs",
+            "image_name": rec["image_name"],
+            "object_id": rec["object_id"],
+            "mask_pixels": mask_pixels,
+        }
+
+    def _rgb_path(self, image_name: str) -> Path:
+        parts = Path(image_name).parts
+        scene = parts[-2]
+        frame = parts[-1]
+        return self.rgb_root / scene / f"{frame}_color.png"
 
 
 # ---------------------------------------------------------------------------

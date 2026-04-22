@@ -47,7 +47,8 @@ class MetricScaleHead(nn.Module):
         Returns:
             scale_token: [batch, 1, ctx_channels]
         """
-        pooled = shape_latent.mean(dim=1)  # [batch, 8]
+        param_dtype = next(self.parameters()).dtype
+        pooled = shape_latent.mean(dim=1).to(param_dtype)  # [batch, 8]
         batch, device, dtype = pooled.shape[0], pooled.device, pooled.dtype
 
         if pointmap_scale is not None:
