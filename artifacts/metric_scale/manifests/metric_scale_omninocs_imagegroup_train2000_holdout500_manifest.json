@@ -1,0 +1,262 @@
+{
+  "args": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "batch_size": 1,
+    "best_output": null,
+    "cache_latents": false,
+    "cache_only": false,
+    "categories": null,
+    "compile_model": false,
+    "config": "checkpoints/hf/pipeline.yaml",
+    "device": "cuda",
+    "epochs": 20,
+    "eval_every": 0,
+    "eval_only": true,
+    "heldout_samples": 0,
+    "load_checkpoint": "artifacts/metric_scale/checkpoints/metric_scale_omninocs_imagegroup_train2000_holdout500.pt",
+    "load_feature_cache": "/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_cache.pt",
+    "lr": 0.0001,
+    "manifest_output": "artifacts/metric_scale/manifests/metric_scale_omninocs_imagegroup_train2000_holdout500_manifest.json",
+    "max_records": null,
+    "metrics_output": "artifacts/metric_scale/metrics/metric_scale_omninocs_imagegroup_train2000_holdout500_eval.jsonl",
+    "min_mask_pixels": 500,
+    "output": "checkpoints/metric_scale_overfit.pt",
+    "overfit_samples": 10,
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "save_feature_cache": null,
+    "seed": 0,
+    "shuffle_split": false,
+    "split": "train",
+    "split_group": "record",
+    "stage1_steps": null,
+    "stage2_steps": null,
+    "validate_manifest": null,
+    "wandb": false,
+    "wandb_entity": null,
+    "wandb_mode": null,
+    "wandb_project": "sam3d-metric-scale",
+    "wandb_run_name": null,
+    "wandb_tags": null,
+    "weight_decay": 0.0001
+  },
+  "artifacts": {
+    "best_checkpoint": null,
+    "checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/metric_scale_omninocs_imagegroup_train2000_holdout500.pt",
+      "sha256": "29c0ff0607ec299b6573164ac99be6bf8e213fa7f89c85f279700a5c4b7c2ab3",
+      "size_bytes": 535697
+    },
+    "feature_cache": {
+      "exists": true,
+      "path": "/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_cache.pt",
+      "size_bytes": 2050270863
+    },
+    "metrics_output": {
+      "exists": true,
+      "path": "artifacts/metric_scale/metrics/metric_scale_omninocs_imagegroup_train2000_holdout500_eval.jsonl",
+      "sha256": "64ed48e85428a987e88426e573794fedbaca4c028c38dd1c9a36d40f399199fd",
+      "size_bytes": 2311
+    }
+  },
+  "best_metrics": {
+    "axis_mean_abs_cm": [
+      0.42930108308792114,
+      0.3307662606239319,
+      0.2524762749671936
+    ],
+    "axis_mean_abs_pct": [
+      2.3252097889781,
+      2.2389262914657593,
+      1.9329547882080078
+    ],
+    "category_mean_abs_cm": {
+      "bottle": 0.19343091547489166,
+      "bowl": 0.2977442741394043,
+      "camera": 0.17807145416736603,
+      "can": 0.13703200221061707,
+      "cup": 0.24544157087802887,
+      "laptop": 0.9875394701957703
+    },
+    "category_mean_abs_pct": {
+      "bottle": 1.974376104772091,
+      "bowl": 2.398354187607765,
+      "camera": 1.5512303449213505,
+      "can": 1.4658997766673565,
+      "cup": 2.4387136101722717,
+      "laptop": 3.26390378177166
+    },
+    "loss": 0.0011259153252467513,
+    "mean_abs_cm": 0.3375145494937897,
+    "mean_abs_pct": 2.165696956217289,
+    "median_abs_cm": 0.15987008810043335,
+    "median_abs_pct": 1.5338986180722713
+  },
+  "dataset": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "categories": null,
+    "max_records": null,
+    "min_mask_pixels": 500,
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "split": "train"
+  },
+  "feature_schema": {
+    "heldout": {
+      "batch_indices": {
+        "dtype": "torch.int32",
+        "shape": [
+          15587
+        ],
+        "type": "tensor"
+      },
+      "category": {
+        "type": "str"
+      },
+      "image_name": {
+        "type": "str"
+      },
+      "metric_dims": {
+        "dtype": "torch.float32",
+        "shape": [
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_scale": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_shift": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "shape": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          4096,
+          8
+        ],
+        "type": "tensor"
+      },
+      "slat_feats": {
+        "dtype": "torch.float32",
+        "shape": [
+          15587,
+          8
+        ],
+        "type": "tensor"
+      },
+      "uid": {
+        "type": "str"
+      }
+    },
+    "train": {
+      "batch_indices": {
+        "dtype": "torch.int32",
+        "shape": [
+          12215
+        ],
+        "type": "tensor"
+      },
+      "category": {
+        "type": "str"
+      },
+      "image_name": {
+        "type": "str"
+      },
+      "metric_dims": {
+        "dtype": "torch.float32",
+        "shape": [
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_scale": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_shift": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "shape": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          4096,
+          8
+        ],
+        "type": "tensor"
+      },
+      "slat_feats": {
+        "dtype": "torch.float32",
+        "shape": [
+          12215,
+          8
+        ],
+        "type": "tensor"
+      },
+      "uid": {
+        "type": "str"
+      }
+    }
+  },
+  "manifest_version": 1,
+  "script": "sam3d_objects/training/finetune_metric_scale.py",
+  "split": {
+    "heldout_categories": {
+      "bottle": 95,
+      "bowl": 69,
+      "camera": 87,
+      "can": 84,
+      "cup": 81,
+      "laptop": 84
+    },
+    "heldout_count": 500,
+    "heldout_scenes": {
+      "scene_1": 44,
+      "scene_2": 55,
+      "scene_3": 108,
+      "scene_4": 119,
+      "scene_5": 96,
+      "scene_6": 78
+    },
+    "seed": 0,
+    "shuffle_split": false,
+    "split_group": "record",
+    "train_categories": {
+      "bottle": 358,
+      "bowl": 265,
+      "camera": 335,
+      "can": 353,
+      "cup": 349,
+      "laptop": 342
+    },
+    "train_count": 2002,
+    "train_scenes": {
+      "scene_1": 199,
+      "scene_2": 360,
+      "scene_3": 348,
+      "scene_4": 441,
+      "scene_5": 306,
+      "scene_6": 348
+    }
+  }
+}

@@ -1,1 +1,8 @@
 __pycache__
+
+# Metric-scale experiment artifacts.
+# Lightweight checkpoints and JSON/JSONL manifests under artifacts/metric_scale
+# are intentionally trackable. Multi-GB feature caches stay outside git.
+artifacts/metric_scale/feature_caches/
+artifacts/metric_scale/**/*.cache.pt
+artifacts/metric_scale/**/*_cache.pt
