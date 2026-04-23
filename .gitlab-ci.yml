@@ -1,0 +1,20 @@
+image: ghcr.io/osscontainertools/kaniko:debug
+
+stages:
+  - build-and-push
+
+build-sam3d-cu128:
+  stage: build-and-push
+  variables:
+    GODEBUG: "http2client=0"
+    DOCKER_CONTEXT: "$CI_PROJECT_DIR/docker/sam3d-cu128"
+    DOCKERFILE: "$CI_PROJECT_DIR/docker/sam3d-cu128/Dockerfile"
+  script:
+    - echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --cache=true
+      --push-retry=10
+      --context "$DOCKER_CONTEXT"
+      --dockerfile "$DOCKERFILE"
+      --destination "$CI_REGISTRY_IMAGE:sam3d-cu128-torch2.8"
+      --destination "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
