@@ -1,4 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+import os
 from typing import Union, Optional
 from copy import deepcopy
 import numpy as np
@@ -104,6 +105,7 @@ class InferencePipelinePointMap(InferencePipeline):
         clip_pointmap_beyond_scale=None,
         metric_scale_head: MetricScaleHead = None,
         metric_scale_decoder: MetricScaleDecoder = None,
+        metric_scale_checkpoint_path: str = None,
         **kwargs,
     ):
         self.depth_model = depth_model
@@ -112,7 +114,9 @@ class InferencePipelinePointMap(InferencePipeline):
         self.clip_pointmap_beyond_scale = clip_pointmap_beyond_scale
         self.metric_scale_head = metric_scale_head
         self.metric_scale_decoder = metric_scale_decoder
+        self.metric_scale_checkpoint_path = metric_scale_checkpoint_path
         super().__init__(*args, **kwargs)
+        self.load_metric_scale_checkpoint(metric_scale_checkpoint_path)
 
     def _compile(self):
         torch._dynamo.config.cache_size_limit = 64
@@ -502,12 +506,14 @@ class InferencePipelinePointMap(InferencePipeline):
             # Predict physical [width, height, depth] in meters from the refined
             # SLAT latent + the scale token produced by the scale head.
             if self.metric_scale_decoder is not None and scale_token is not None:
-                metric_dims = self.metric_scale_decoder.predict_metric_dimensions(
-                    slat.feats,
-                    scale_token,
-                    slat.coords[:, 0],
-                )
+                with torch.no_grad():
+                    metric_dims = self.metric_scale_decoder.predict_metric_dimensions(
+                        slat.feats,
+                        scale_token,
+                        slat.coords[:, 0],
+                    )
                 outputs["metric_dimensions"] = metric_dims  # [batch, 3] in meters
+                outputs["metric_dimensions_cm"] = metric_dims * 100.0
             glb = outputs.get("glb", None)
             gs_input = outputs.get("gaussian", None)
 
@@ -588,6 +594,25 @@ class InferencePipelinePointMap(InferencePipeline):
             return None
         with torch.no_grad():
             return self.metric_scale_head(shape_latent, pointmap_scale, pointmap_shift)
+
+    def load_metric_scale_checkpoint(self, checkpoint_path: str | None):
+        if checkpoint_path is None:
+            return
+        checkpoint_path = (
+            checkpoint_path
+            if os.path.isabs(checkpoint_path)
+            else os.path.join(self.workspace_dir, checkpoint_path)
+        )
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        if self.metric_scale_head is None:
+            self.metric_scale_head = MetricScaleHead()
+        if self.metric_scale_decoder is None:
+            self.metric_scale_decoder = MetricScaleDecoder()
+        self.metric_scale_head.load_state_dict(checkpoint["metric_scale_head"])
+        self.metric_scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"])
+        self.metric_scale_head.to(self.device).eval()
+        self.metric_scale_decoder.to(self.device).eval()
+        logger.info(f"Loaded metric scale checkpoint from {checkpoint_path}")
 
     def _get_slat_backbone(self):
         """Return the SLatFlowModelTdfyWrapper that owns condition_embedder."""

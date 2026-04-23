@@ -84,6 +84,8 @@ class _ScaleAugmentedEmbedderProxy:
 
     def __call__(self, *args, **kwargs):
         cond = self._base(*args, **kwargs)                          # [batch, seq_len, ctx_ch]
+        if cond.shape[-1] != self._scale_token.shape[-1]:
+            return cond
         return torch.cat([cond, self._scale_token], dim=1)         # [batch, seq_len+1, ctx_ch]
 
     def __getattr__(self, name: str):
