@@ -1,137 +1,217 @@
-# SAM 3D Objects — Metric Accuracy TODO
+# SAM 3D Objects - Metric Accuracy TODO
 
-Goal: Make SAM 3D Objects physically accurate — recover metric scale (real-world units) and
-achieve near 1-to-1 geometric fidelity with the input object.
+Goal: make SAM 3D Objects physically accurate by recovering metric scale
+(real-world units), then later address near 1-to-1 geometric fidelity with the
+input object.
 
----
-
-## Phase 1 — Dataset Preparation
-
-### 1.1 Download and validate datasets
-- [ ] Download Objectron (Google Cloud Storage: `gs://objectron`)
-- [ ] Download NOCS REAL275 (GitHub + supplementary scale zip)
-- [ ] Spot-check metric annotations on 10-20 samples from each — confirm bounding box
-      dimensions are in meters and match visual estimates
-
-### 1.2 Preprocessing — Objectron
-- [ ] Extract single representative frame per object instance from video clips
-- [ ] Parse 3D bounding box annotations → extract `[width, height, depth]` in meters
-- [ ] Generate segmentation masks (run SAM on extracted frames using bounding box as prompt)
-- [ ] Run MoGe on each frame → extract `pointmap_scale` and `pointmap_shift` per instance
-- [ ] Save as unified record: `{image, mask, pointmap_scale, pointmap_shift, metric_dims}`
-
-### 1.3 Preprocessing — NOCS REAL275
-- [ ] Parse per-instance metric size from supplementary scale files
-- [ ] Confirm masks are already provided (they are)
-- [ ] Run MoGe on each frame → extract `pointmap_scale` and `pointmap_shift`
-- [ ] Save in same unified record format as Objectron
-
-### 1.4 Build unified dataloader
-- [ ] Implement `MetricScaleDataset` that loads both sources with consistent format
-- [ ] Verify `pointmap_scale`/`pointmap_shift` correlate with ground truth metric scale
-      (scatter plot: MoGe scale vs. GT scale) — this validates the metric anchor assumption
-- [ ] Define train/val split (hold out 10% per category)
+Last updated: 2026-04-22
 
 ---
 
-## Phase 2 — Architecture Implementation
+## Current Status
 
-### 2.1 Expose pointmap statistics through the pipeline
-- [ ] In `inference_pipeline_pointmap.py`: confirm `pointmap_scale` and `pointmap_shift`
-      are accessible after MoGe runs and before SS generation
-- [ ] Pass them forward in `ss_input_dict` so they reach the scale head
+Metric-scale recovery has moved from architecture sketch to a working prototype.
+The frozen SAM3D/MoGe feature cache workflow is implemented, and cached metric
+heads train successfully on OmniNOCS NOCS-Real275.
 
-### 2.2 Implement `MetricScaleHead`
-- [ ] New file: `sam3d_objects/model/backbone/scale_head.py`
-- [ ] Input: pooled SS latent `[batch, 8]` + `log(pointmap_scale)` + `pointmap_shift_z`
-      → total input dim = 10
-- [ ] Architecture: MLP (10 → 64 → 32 → 1), output = `log(metric_scale)` scalar
-- [ ] Rationale: SS latent encodes object proportions; pointmap stats provide the metric
-      anchor from MoGe. Together they can predict physical scale.
+Best completed runs:
 
-### 2.3 Implement `ScaleTokenProjector`
-- [ ] In same file: `sam3d_objects/model/backbone/scale_head.py`
-- [ ] Input: `log(metric_scale)` scalar `[batch, 1]`
-- [ ] Architecture: `nn.Linear(1, 768)` → conditioning token `[batch, 1, 768]`
-- [ ] Rationale: SLAT's cross-attention expects tokens of dim=768. The scalar scale value
-      must be projected into that space to be consumed as a conditioning signal.
+| Split | Train / Held-out | Held-out MAPE | Baseline MAPE | Notes |
+|---|---:|---:|---:|---|
+| Image-grouped | 2002 / 500 | 2.17% | 12.90% | Held-out cm error: W=0.43, H=0.33, D=0.25 |
+| Scene-heldout | 12882 / 3228 cached | 3.23% | 10.90% | Saved final checkpoint cm error: W=0.69, H=0.54, D=0.44 |
 
-### 2.4 Wire scale head between SS and SLAT
-- [ ] In `inference_pipeline_pointmap.py`: after SS generation, pool `shape_latent`
-      via mean over spatial dim → `[batch, 8]`
-- [ ] Run through `MetricScaleHead` → `log_scale`
-- [ ] Run through `ScaleTokenProjector` → scale token `[batch, 1, 768]`
-- [ ] Concatenate scale token with existing DINO condition tokens before SLAT generation
+The scene-heldout best checkpoint by held-out mean absolute percentage error is
+epoch 175 at 3.09% MAPE, but only the final epoch-200 checkpoint was saved. Final
+epoch 200 improved median error but worsened mean error.
 
-### 2.5 Implement `MetricScaleDecoder`
-- [ ] New file: `sam3d_objects/model/backbone/metric_scale_decoder.py`
-- [ ] Input: pooled SLAT latent `[batch, 8]` + scale token `[batch, 1, 768]`
-      (project scale token down to 8-dim for concatenation, or use separately)
-- [ ] Architecture: MLP → `[width, height, depth]` in meters (log-space output)
-- [ ] Wire into SLAT stage output in `inference_pipeline_pointmap.py`
-- [ ] Rationale: SLAT refines geometry with full image + geometry context. It has more
-      information than SS alone, making it the right place for the final metric prediction.
+Artifacts:
 
-### 2.6 Update config/YAML
-- [ ] Add scale token to SLAT condition embedder input mapping in pipeline YAML
-- [ ] Ensure `EmbedderFuser` concatenates scale token alongside DINO tokens
+```text
+/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_cache.pt
+/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_metrics.jsonl
+/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_cm_backfill.jsonl
+/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500.pt
 
----
+/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt
+/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_metrics.jsonl
+/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cm_backfill.jsonl
+/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6.pt
+```
 
-## Phase 3 — Fine-Tuning Setup
+Current implemented design:
 
-### 3.1 Define loss function
-- [ ] Primary: smooth L1 loss on `log(predicted_scale)` vs `log(GT_metric_scale)`
-      (log-space reduces sensitivity to large objects vs small objects)
-- [ ] Secondary: smooth L1 on `[width, height, depth]` predictions from MetricScaleDecoder
-- [ ] No loss on existing components — they stay frozen
+```text
+planning/CURRENT_METRIC_READOUT_DESIGN_2026-04-22.md
+planning/MIXED_OMNINOCS_TRAINING_STATUS_2026-04-22.md
+planning/OMNINOCS_RGB_DOWNLOAD_STATUS_2026-04-22.md
+```
 
-### 3.2 Implement fine-tuning script
-- [ ] New file: `sam3d_objects/training/finetune_metric_scale.py`
-- [ ] Freeze: all existing SS model, SLAT model, condition embedders, decoders
-- [ ] Train only: `MetricScaleHead`, `ScaleTokenProjector`, `MetricScaleDecoder`,
-      and the new cross-attention K/V projection in SLAT for the scale token
-- [ ] Optimizer: AdamW, lr=1e-4, weight decay=1e-4
-- [ ] Log: scale prediction error (mean absolute % error) on val set each epoch
+Durable reproducibility artifacts:
 
-### 3.3 Validate training loop
-- [ ] Overfit on 10 samples first — confirm loss decreases and predictions are reasonable
-- [ ] Run full training on Objectron + NOCS REAL275 combined
+```text
+artifacts/metric_scale/checkpoints/
+artifacts/metric_scale/manifests/
+artifacts/metric_scale/metrics/
+```
 
 ---
 
-## Phase 4 — Evaluation
+## Phase 1 - Dataset Preparation
 
-- [ ] Metric: mean absolute percentage error (MAPE) on scale predictions vs GT
-- [ ] Metric: per-axis dimensional error in cm (width, height, depth)
-- [ ] Baseline comparison: current pipeline scale (SSI space) vs new metric-grounded output
-- [ ] Visualize: predicted vs GT bounding box overlaid on input image for qualitative check
-- [ ] Test on WildRGB-D (out-of-distribution) to assess generalization
+### Completed
+
+- [x] Downloaded OmniNOCS NOCS-Real275 annotations.
+- [x] Downloaded NOCS-Real275 source RGB test frames to `/mnt/dest/OmniNOCS/real_test/`.
+- [x] Confirmed NOCS masks are available through OmniNOCS annotations.
+- [x] Implemented/used `OmniNOCSReal275Dataset` for metric-dimension training records.
+- [x] Added `OmniNOCSObjectDataset` for common release-style metadata across
+      NOCS-Real275, Objectron, ARKitScenes, and Hypersim when source RGB roots
+      are available.
+- [x] Ran MoGe-2 correlation check on 1,177 object instances from 200 NOCS-Real275 frames.
+- [x] Validated metric-anchor assumption: overall log-log Pearson `r=0.708`.
+- [x] Diagnosed bottle/cup MoGe failure modes:
+  - bottle transparency is a real issue and improves when segmented pixels are painted opaque;
+  - cup remains structurally harder because open-top geometry confuses depth extent.
+
+### Remaining
+
+- [ ] Confirm whether ARKitScenes and Hypersim OmniNOCS extraction finished cleanly.
+- [ ] Locate or download source RGB roots for Objectron, ARKitScenes, and Hypersim.
+- [ ] Decide whether to include Objectron in the next training phase or keep the current
+      NOCS-first path until inference integration is complete.
+- [ ] If using Objectron, download source RGB and adapt `scripts/preprocess_objectron.py`
+      to the OmniNOCS annotation layout.
+- [ ] Add a durable dataset/cache manifest so `/tmp` artifacts can be reproduced or moved
+      without relying only on notes.
+- [ ] Add optional transparent-object preprocessing experiment for bottle/cup using masks.
 
 ---
 
-## Phase 5 — Geometric Fidelity (Longer Term)
+## Phase 2 - Architecture Implementation
+
+### Completed
+
+- [x] Added `MetricScaleHead` in `sam3d_objects/model/backbone/scale_head.py`.
+- [x] Updated `MetricScaleHead` to output a 768-dim scale token directly from pooled SS
+      latent plus MoGe pointmap stats, avoiding the earlier scalar bottleneck.
+- [x] Added `_ScaleAugmentedEmbedderProxy` for appending a scale token to condition
+      embeddings without changing generator architecture.
+- [x] Added `MetricScaleDecoder` in
+      `sam3d_objects/model/backbone/metric_scale_decoder.py`.
+- [x] Confirmed `pointmap_scale` and `pointmap_shift` are available from the existing
+      pointmap preprocessing path.
+- [x] Prototyped metric prediction from frozen SS/SLAT features in
+      `sam3d_objects/training/finetune_metric_scale.py`.
+- [x] Added metric-head checkpoint loading to `InferencePipelinePointMap`.
+- [x] Added inference outputs for predicted metric dimensions in meters and centimeters.
+
+### Remaining
+
+- [ ] If scale-aware generation is still desired, align the scale-token dimension
+      with the live SLAT condition tokens and partially unfreeze or adapt SLAT
+      cross-attention so generation itself learns to use the scale token.
+
+---
+
+## Phase 3 - Fine-Tuning Setup
+
+### Completed
+
+- [x] Implemented frozen-backbone fine-tuning script:
+      `sam3d_objects/training/finetune_metric_scale.py`.
+- [x] Freezes existing SAM3D pipeline models during metric-head training.
+- [x] Trains `MetricScaleHead` and `MetricScaleDecoder` with Smooth L1 loss in
+      log-dimension space.
+- [x] Added cached latent workflow:
+  - `--cache-latents`
+  - `--save-feature-cache`
+  - `--load-feature-cache`
+  - `--cache-only`
+- [x] Added grouped splits: `record`, `image`, and `scene`.
+- [x] Added deterministic split controls: `--seed`, `--shuffle-split`.
+- [x] Added per-axis, per-category, and JSONL metrics.
+- [x] Added centimeter-scale absolute error metrics.
+- [x] Added optional Weights & Biases logging for train/eval/baseline metrics.
+- [x] Added category mean-size held-out baseline.
+- [x] Added best-checkpoint saving by held-out mean absolute percentage error.
+- [x] Validated 10-sample cached overfit to 2.61% MAPE.
+- [x] Validated 80/20 cached held-out run around 14.2% MAPE near epoch 150.
+- [x] Completed image-grouped 2002/500 run: 2.17% held-out MAPE.
+- [x] Completed scene-heldout 12890/3228 run: best 3.09% held-out MAPE at epoch 175.
+
+### Remaining
+
+- [ ] Add resume-from-checkpoint support for metric-head training.
+- [ ] Add a cache metadata validator: script version, dataset roots, split groups,
+- [x] Added cache/artifact manifests with dataset roots, split details, category counts,
+      scene counts, feature tensor schema, artifact sizes, and checkpoint hashes.
+- [ ] Add category-balanced or stratified grouped split modes.
+- [ ] Add leave-one-category-out diagnostics, especially for bottle/camera coverage gaps.
+- [ ] Add training/eval tests for cached feature loading and grouped split behavior.
+
+---
+
+## Phase 4 - Evaluation
+
+### Completed
+
+- [x] Report mean and median absolute percentage error.
+- [x] Report per-axis dimensional MAPE.
+- [x] Report per-category MAPE.
+- [x] Add absolute centimeter error metrics to cached evaluation output.
+- [x] Backfilled centimeter-error metrics for the existing saved final checkpoints/caches.
+- [x] Compare against category mean-size baseline.
+- [x] Run image-grouped held-out evaluation.
+- [x] Run full-scene held-out evaluation.
+
+### Remaining
+
+- [ ] Recover or retrain the scene-heldout epoch-175 best checkpoint for cm-error reporting.
+- [ ] Compare against the original pipeline's non-metric/SSI scale behavior.
+- [ ] Add prediction-vs-ground-truth scatter plots for each axis and category.
+- [ ] Visualize predicted vs ground-truth 3D bounding boxes over input images.
+- [ ] Run a held-out split that includes all six NOCS categories under stricter grouping.
+- [ ] Run cross-scene folds instead of a single scene-6 holdout.
+- [ ] Evaluate on WildRGB-D or another out-of-distribution metric dataset.
+- [ ] Audit bottle/cup performance with and without opaque-mask painting.
+
+---
+
+## Phase 5 - Productization / Integration
+
+- [x] Decided artifact location for trained metric-head checkpoints outside `/tmp`.
+- [ ] Add documented commands for cache creation, training, evaluation, and inference.
+- [ ] Add a small reproducible smoke-test cache for CI or local sanity checks.
+- [ ] Add `.gitignore` rules or artifact policy for large feature caches and checkpoints.
+- [ ] Decide whether Docker/CI additions should be committed with this work.
+- [ ] Clean up and commit the current training-script changes and planning docs.
+
+---
+
+## Phase 6 - Geometric Fidelity (Longer Term)
 
 This phase addresses the second goal: 1-to-1 reconstruction of fine geometric detail
-(surface texture, cracks, exact shape). Requires training changes to the generative model.
+(surface texture, cracks, exact shape). It requires training changes to the generative
+model, not just metric readout heads.
 
-- [ ] Literature review: reconstruction losses for flow matching / score-based models
-- [ ] Design: add perceptual loss term (rendered output vs input image) during training
-- [ ] Design: add depth consistency loss (MoGe depth of rendered output vs input depth)
-- [ ] Dataset: identify a dataset with fine-grained geometric ground truth
-      (high-res 3D scans of real objects — e.g., OmniObject3D, or custom captures)
-- [ ] Implement training with combined flow matching + reconstruction loss
-- [ ] Evaluate: Chamfer distance, F-score on held-out scans
+- [ ] Literature review: reconstruction losses for flow matching / score-based models.
+- [ ] Design: add perceptual loss term by rendering output and comparing to input image.
+- [ ] Design: add depth consistency loss using MoGe depth of rendered output vs input depth.
+- [ ] Identify a dataset with fine-grained geometric ground truth, such as high-res
+      3D scans of real objects.
+- [ ] Implement training with combined flow matching and reconstruction losses.
+- [ ] Evaluate Chamfer distance and F-score on held-out scans.
 
 ---
 
 ## Milestones
 
-| Milestone | Description |
-|-----------|-------------|
-| M1 | Datasets downloaded, preprocessed, dataloader validated |
-| M2 | Architecture implemented and pipeline runs end-to-end without errors |
-| M3 | Scale head overfits on 10 samples (sanity check) |
-| M4 | Fine-tuning converges on full dataset, MAPE < 15% on val set |
-| M5 | Out-of-distribution evaluation on WildRGB-D |
-| M6 | Phase 5 reconstruction fidelity work begins |
+| Milestone | Status | Notes |
+|---|---|---|
+| M1 | Mostly complete | NOCS/OmniNOCS path is usable; Objectron remains optional/pending |
+| M2 | Prototype complete | Metric heads and cached training path run end-to-end |
+| M3 | Complete | 10-sample cached overfit reached 2.61% MAPE |
+| M4 | Prototype complete | Scene-heldout best is 3.09% MAPE, well below 15% target |
+| M5 | Not started | OOD evaluation still pending |
+| M6 | Not started | Geometric fidelity work remains future phase |
