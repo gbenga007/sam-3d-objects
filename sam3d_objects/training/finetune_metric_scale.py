@@ -909,14 +909,29 @@ def load_metric_checkpoint(
     path: str,
     scale_head: MetricScaleHead,
     scale_decoder: MetricScaleDecoder,
+    slat_backbone=None,
 ) -> dict:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     # strict=False: old checkpoints had ctx_channels=768; the MLP final layer and
     # the decoder's scale_proj changed to 1024-dim and will be randomly initialised.
     scale_head.load_state_dict(checkpoint["metric_scale_head"], strict=False)
     scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"], strict=False)
+    if slat_backbone is not None and "slat_cross_attn" in checkpoint:
+        slat_state = checkpoint["slat_cross_attn"]
+        for i, block in enumerate(slat_backbone.blocks):
+            block_ca = {k.split(f"blocks.{i}.cross_attn.", 1)[1]: v
+                        for k, v in slat_state.items()
+                        if k.startswith(f"blocks.{i}.cross_attn.")}
+            block_n2 = {k.split(f"blocks.{i}.norm2.", 1)[1]: v
+                        for k, v in slat_state.items()
+                        if k.startswith(f"blocks.{i}.norm2.")}
+            if block_ca:
+                block.cross_attn.load_state_dict(block_ca, strict=True)
+            if block_n2:
+                block.norm2.load_state_dict(block_n2, strict=True)
+        print(f"Restored SLAT cross-attn weights from {path}")
     print(f"Loaded metric scale checkpoint from {path}")
-    return checkpoint.get("args", {})
+    return checkpoint
 
 
 def evaluate_and_record(
@@ -1042,6 +1057,25 @@ def main() -> None:
         "--load-checkpoint",
         default=None,
         help="Load a saved metric-head checkpoint before training or eval-only metrics.",
+    )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        help=(
+            "Resume live training from a recovery checkpoint saved by --checkpoint-every. "
+            "Loads metric-head + SLAT cross-attn weights and continues from the epoch "
+            "stored in the checkpoint. Implies --load-checkpoint for the same path."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=0,
+        help=(
+            "Save a rolling recovery checkpoint every N epochs during live training "
+            "(non-cached path). Overwrites the same file each time to limit disk usage. "
+            "Strongly recommended when --unfreeze-slat-cross-attn is set."
+        ),
     )
     parser.add_argument(
         "--eval-only",
@@ -1221,9 +1255,6 @@ def main() -> None:
     scale_head = MetricScaleHead().to(pipeline.device).train()
     scale_decoder = MetricScaleDecoder().to(pipeline.device).train()
 
-    if args.load_checkpoint:
-        load_metric_checkpoint(args.load_checkpoint, scale_head, scale_decoder)
-
     # Selectively unfreeze SLAT cross-attn after all other pipeline params are
     # frozen.  collect_slat_cross_attn_params flips requires_grad back to True
     # on cross_attn + norm2 in all 24 blocks and returns the param list.
@@ -1231,6 +1262,14 @@ def main() -> None:
     slat_cross_attn_params = []
     if args.unfreeze_slat_cross_attn:
         slat_cross_attn_params, slat_backbone = collect_slat_cross_attn_params(pipeline)
+
+    resume_start_epoch = 0
+    resume_path = args.resume_from or args.load_checkpoint
+    if resume_path:
+        ckpt = load_metric_checkpoint(resume_path, scale_head, scale_decoder, slat_backbone)
+        if args.resume_from and ckpt.get("epoch") is not None:
+            resume_start_epoch = int(ckpt["epoch"])
+            print(f"Resuming from epoch {resume_start_epoch}")
 
     # Load a separate eval cache for the non-cached training path.
     eval_feature_cache: list[dict] = []
@@ -1398,14 +1437,19 @@ def main() -> None:
         best_metrics = None
 
         # Baseline eval against the eval cache (if provided) before any training.
-        if eval_heldout_cache and args.eval_every:
+        if eval_heldout_cache and args.eval_every and resume_start_epoch == 0:
             baseline_metrics = category_mean_baseline(eval_feature_cache, eval_heldout_cache)
             if baseline_metrics is not None:
                 print(format_metrics("category_baseline_heldout", None, baseline_metrics))
                 write_metrics(args.metrics_output, "category_baseline_heldout", None, baseline_metrics)
                 wandb_log(wandb_run, flatten_metrics("category_baseline_heldout", baseline_metrics))
 
-        for epoch in range(args.epochs):
+        recovery_output = (
+            str(Path(args.output).with_name(f"{Path(args.output).stem}_resume{Path(args.output).suffix}"))
+            if args.checkpoint_every else None
+        )
+
+        for epoch in range(resume_start_epoch, args.epochs):
             running_loss = 0.0
             running_count = 0
             progress = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}")
@@ -1493,6 +1537,17 @@ def main() -> None:
                             },
                             step=epoch + 1,
                         )
+
+            if recovery_output and args.checkpoint_every and (epoch + 1) % args.checkpoint_every == 0:
+                save_metric_checkpoint(
+                    recovery_output,
+                    scale_head,
+                    scale_decoder,
+                    args,
+                    epoch + 1,
+                    slat_backbone=slat_backbone,
+                )
+                print(f"Saved recovery checkpoint to {recovery_output} (epoch={epoch + 1})")
 
     output_path = Path(args.output)
     save_metric_checkpoint(
