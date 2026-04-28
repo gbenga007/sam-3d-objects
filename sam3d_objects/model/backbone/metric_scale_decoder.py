@@ -19,7 +19,7 @@ class MetricScaleDecoder(nn.Module):
     def __init__(
         self,
         slat_feat_dim: int = 8,
-        scale_token_dim: int = 768,
+        scale_token_dim: int = 1024,
         scale_proj_dim: int = 16,
         hidden_dim: int = 128,
     ):
@@ -42,7 +42,7 @@ class MetricScaleDecoder(nn.Module):
         """
         Args:
             slat_feats:    [num_voxels, 8]   — SparseTensor .feats after SLAT decoding
-            scale_token:   [batch, 1, 768]   — from ScaleTokenProjector
+            scale_token:   [batch, 1, 1024]  — from MetricScaleHead
             batch_indices: [num_voxels]      — per-voxel batch index (SparseTensor coords[:, 0])
 
         Returns:

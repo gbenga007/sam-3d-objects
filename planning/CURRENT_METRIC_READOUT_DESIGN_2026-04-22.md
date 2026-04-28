@@ -207,17 +207,52 @@ The current validated path is:
 frozen SS + frozen SLAT features + metric readout heads -> metric dimensions
 ```
 
-It is not:
+For the current mesh output behavior:
+
+```text
+stage-2 SLAT mesh output -> canonical / normalized object mesh
+```
+
+The decoded mesh lives in the model's canonical cube-like coordinate frame,
+roughly centered in a normalized range around `[-0.5, 0.5]`. The exported GLB
+is postprocessed and rotated for convention changes, but it is not rescaled
+using the predicted metric dimensions.
+
+Optional layout post-optimization may later apply scene/world transforms, but
+that is a separate downstream alignment step and not the native stage-2 mesh
+prediction.
+
+So the current system should be understood as:
+
+```text
+canonical mesh prediction
++ separate metric dimension prediction
+```
+
+It is not yet:
 
 ```text
 metric scale token -> SLAT cross-attention -> scale-conditioned mesh generation
 ```
 
 There is an inference-time proxy that can append the metric scale token to SLAT
-conditioning only when token dimensions match. The current trained token is
-768-dimensional, while the live DINO/SLAT condition tokens in this checkpoint are
-1024-dimensional, so inference skips injection and uses the token only for metric
-readout. This keeps inference aligned with the validated training behavior.
+conditioning. In the current pointmap pipeline path, the token is injected before
+stage-2 sampling, but the mesh decoder still outputs a canonical mesh and the
+predicted metric dimensions are returned as a separate output:
+
+```text
+outputs["glb"]                  -> canonical mesh export
+outputs["metric_dimensions"]    -> [width, height, depth] in meters
+outputs["metric_dimensions_cm"] -> [width, height, depth] in centimeters
+```
+
+This means the present design already supports the decomposition:
+
+```text
+canonical geometry + separate metric-size estimate
+```
+
+That is a sensible target formulation for the next phase as well.
 
 ## Next Metric-Phase Work
 

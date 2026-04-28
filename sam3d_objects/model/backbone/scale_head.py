@@ -6,23 +6,23 @@ from typing import Optional
 
 class MetricScaleHead(nn.Module):
     """
-    Produces a 768-dim scale conditioning token from a pooled SS shape latent
-    combined with MoGe pointmap statistics (scale and shift_z).
+    Produces a scale conditioning token from a pooled SS shape latent combined
+    with MoGe pointmap statistics (scale and shift_z).
 
     The SS latent contributes object proportions; pointmap_scale/shift provide
     the metric anchor since MoGe outputs depth in meters. Neither alone is
     sufficient — the latent has no metric grounding, and the pointmap statistics
     encode scene depth without object-specific shape context.
 
-    A single linear projection from a scalar bottleneck was deliberately avoided:
-    the MLP projects directly to ctx_channels so the token can encode richer
-    scale-related structure beyond a single magnitude value.
+    ctx_channels must match cond_channels in the SLAT generator backbone
+    (1024 in slat_generator.yaml) so the token can be appended to the SLAT
+    condition sequence without a dimension mismatch.
 
     Input dim:  latent_dim (8) + log(pointmap_scale) (1) + pointmap_shift_z (1) = 10
     Output:     scale token [batch, 1, ctx_channels]
     """
 
-    def __init__(self, latent_dim: int = 8, hidden_dim: int = 64, ctx_channels: int = 768):
+    def __init__(self, latent_dim: int = 8, hidden_dim: int = 64, ctx_channels: int = 1024):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(latent_dim + 2, hidden_dim),

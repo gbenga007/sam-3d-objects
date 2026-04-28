@@ -17,10 +17,11 @@ def set_attention_backend():
     logger.info(f"GPU name is {gpu_name}")
     if os.environ.get("ATTN_BACKEND") or os.environ.get("SPARSE_ATTN_BACKEND"):
         return
-    if "A100" in gpu_name or "H100" in gpu_name or "H200" in gpu_name:
-        # logger.info("Use flash_attn")
-        os.environ["ATTN_BACKEND"] = "flash_attn"
-        os.environ["SPARSE_ATTN_BACKEND"] = "flash_attn"
+    # Default to SDPA unless the caller explicitly opts into a different backend.
+    # This avoids hard failures when prebuilt flash-attn wheels are incompatible
+    # with the host runtime despite a capable GPU being present.
+    os.environ["ATTN_BACKEND"] = "sdpa"
+    os.environ["SPARSE_ATTN_BACKEND"] = "sdpa"
 
 set_attention_backend()
 

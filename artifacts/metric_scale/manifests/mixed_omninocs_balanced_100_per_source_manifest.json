@@ -1,0 +1,492 @@
+{
+  "args": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": "/mnt/dest/OmniNOCS/omni3d_rgb",
+    "batch_size": 8,
+    "best_output": null,
+    "cache_latents": true,
+    "cache_only": false,
+    "categories": null,
+    "compile_model": false,
+    "config": "checkpoints/hf/pipeline.yaml",
+    "dataset": "omninocs-mixed",
+    "device": "cuda",
+    "epochs": 20,
+    "eval_every": 5,
+    "eval_only": false,
+    "heldout_samples": 80,
+    "hypersim_rgb_root": "/mnt/dest/OmniNOCS/omni3d_rgb/hypersim",
+    "load_checkpoint": null,
+    "load_feature_cache": null,
+    "lr": 0.0001,
+    "manifest_output": "artifacts/metric_scale/manifests/mixed_omninocs_balanced_100_per_source_manifest.json",
+    "max_records": null,
+    "max_records_per_source": 100,
+    "metrics_output": "artifacts/metric_scale/metrics/mixed_omninocs_balanced_100_per_source_eval.jsonl",
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": "/mnt/dest/OmniNOCS/omni3d_rgb",
+    "omninocs_root": "/mnt/dest/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275",
+      "objectron",
+      "arkitscenes",
+      "hypersim"
+    ],
+    "output": "artifacts/metric_scale/checkpoints/mixed_omninocs_balanced_100_per_source.pt",
+    "overfit_samples": 320,
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "save_feature_cache": "/tmp/mixed_omninocs_balanced_100_per_source_cache.pt",
+    "seed": 42,
+    "shuffle_split": true,
+    "skip_missing_rgb": true,
+    "split": "train",
+    "split_group": "record",
+    "stage1_steps": 1,
+    "stage2_steps": 1,
+    "validate_manifest": null,
+    "wandb": false,
+    "wandb_entity": null,
+    "wandb_mode": null,
+    "wandb_project": "sam3d-metric-scale",
+    "wandb_run_name": null,
+    "wandb_tags": null,
+    "weight_decay": 0.0001
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/mixed_omninocs_balanced_100_per_source_best.pt",
+      "sha256": "2342e3fc9187d81532ae8c6f514deab477bfc8efa70e11b3c43fa79d32efe0f8",
+      "size_bytes": 537609
+    },
+    "checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/mixed_omninocs_balanced_100_per_source.pt",
+      "sha256": "11a235739395d6e705526a82e4259529c275595be3e79f4b7f8c0d03b9175e4d",
+      "size_bytes": 536165
+    },
+    "feature_cache": {
+      "exists": true,
+      "path": "/tmp/mixed_omninocs_balanced_100_per_source_cache.pt",
+      "size_bytes": 226714837
+    },
+    "metrics_output": {
+      "exists": true,
+      "path": "artifacts/metric_scale/metrics/mixed_omninocs_balanced_100_per_source_eval.jsonl",
+      "sha256": "a9afa1742592328465fbd750db2d47df764c53f535fe790b24f1147c874c0efe",
+      "size_bytes": 19873
+    }
+  },
+  "best_metrics": {
+    "axis_mean_abs_cm": [
+      21.859357833862305,
+      32.84637451171875,
+      25.471229553222656
+    ],
+    "axis_mean_abs_pct": [
+      111.94243431091309,
+      76.92234516143799,
+      71.4283287525177
+    ],
+    "category_mean_abs_cm": {
+      "bathtub": 52.746456146240234,
+      "books": 8.349832534790039,
+      "bottle": 11.481452941894531,
+      "bowl": 4.98815393447876,
+      "cabinet": 71.80233001708984,
+      "camera": 4.124953746795654,
+      "can": 12.862337112426758,
+      "cereal box": 11.398462295532227,
+      "chair": 32.80400085449219,
+      "cup": 12.878240585327148,
+      "floor mat": 179.6037139892578,
+      "lamp": 24.642457962036133,
+      "laptop": 9.850104331970215,
+      "machine": 32.143795013427734,
+      "mirror": 93.0534896850586,
+      "oven": 63.35725784301758,
+      "pillow": 8.529280662536621,
+      "shelves": 49.27565002441406,
+      "shoes": 8.486224174499512,
+      "sink": 21.446365356445312,
+      "sofa": 93.03515625,
+      "table": 53.804527282714844,
+      "television": 35.60639953613281
+    },
+    "category_mean_abs_pct": {
+      "bathtub": 44.395384192466736,
+      "books": 169.14381980895996,
+      "bottle": 142.2240972518921,
+      "bowl": 60.2661669254303,
+      "cabinet": 38.92187178134918,
+      "camera": 42.148953676223755,
+      "can": 173.26186895370483,
+      "cereal box": 112.2113585472107,
+      "chair": 41.338104009628296,
+      "cup": 146.92472219467163,
+      "floor mat": 311.9079828262329,
+      "lamp": 60.246652364730835,
+      "laptop": 32.31157958507538,
+      "machine": 46.858611702919006,
+      "mirror": 301.4936685562134,
+      "oven": 59.218829870224,
+      "pillow": 21.66028767824173,
+      "shelves": 53.42288017272949,
+      "shoes": 59.95756387710571,
+      "sink": 43.033215403556824,
+      "sofa": 75.86429715156555,
+      "table": 50.73190927505493,
+      "television": 287.88726329803467
+    },
+    "loss": 0.334249347448349,
+    "mean_abs_cm": 26.725650787353516,
+    "mean_abs_pct": 86.76437139511108,
+    "median_abs_cm": 11.996345520019531,
+    "median_abs_pct": 50.69664120674133,
+    "source_mean_abs_cm": {
+      "arkitscenes": 47.061378479003906,
+      "hypersim": 46.49943161010742,
+      "nocs_real275": 9.190704345703125,
+      "objectron": 14.263993263244629
+    },
+    "source_mean_abs_pct": {
+      "arkitscenes": 61.120736598968506,
+      "hypersim": 85.3426992893219,
+      "nocs_real275": 90.55154919624329,
+      "objectron": 106.37106895446777
+    }
+  },
+  "dataset": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": "/mnt/dest/OmniNOCS/omni3d_rgb",
+    "categories": null,
+    "dataset": "omninocs-mixed",
+    "hypersim_rgb_root": "/mnt/dest/OmniNOCS/omni3d_rgb/hypersim",
+    "max_records": null,
+    "max_records_per_source": 100,
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": "/mnt/dest/OmniNOCS/omni3d_rgb",
+    "omninocs_root": "/mnt/dest/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275",
+      "objectron",
+      "arkitscenes",
+      "hypersim"
+    ],
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "skip_missing_rgb": true,
+    "split": "train"
+  },
+  "feature_schema": {
+    "heldout": {
+      "batch_indices": {
+        "dtype": "torch.int32",
+        "shape": [
+          17964
+        ],
+        "type": "tensor"
+      },
+      "category": {
+        "type": "str"
+      },
+      "image_name": {
+        "type": "str"
+      },
+      "metric_dims": {
+        "dtype": "torch.float32",
+        "shape": [
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_scale": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_shift": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "shape": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          4096,
+          8
+        ],
+        "type": "tensor"
+      },
+      "slat_feats": {
+        "dtype": "torch.float32",
+        "shape": [
+          17964,
+          8
+        ],
+        "type": "tensor"
+      },
+      "source": {
+        "type": "str"
+      },
+      "uid": {
+        "type": "str"
+      }
+    },
+    "train": {
+      "batch_indices": {
+        "dtype": "torch.int32",
+        "shape": [
+          18709
+        ],
+        "type": "tensor"
+      },
+      "category": {
+        "type": "str"
+      },
+      "image_name": {
+        "type": "str"
+      },
+      "metric_dims": {
+        "dtype": "torch.float32",
+        "shape": [
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_scale": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_shift": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "shape": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          4096,
+          8
+        ],
+        "type": "tensor"
+      },
+      "slat_feats": {
+        "dtype": "torch.float32",
+        "shape": [
+          18709,
+          8
+        ],
+        "type": "tensor"
+      },
+      "source": {
+        "type": "str"
+      },
+      "uid": {
+        "type": "str"
+      }
+    }
+  },
+  "manifest_version": 1,
+  "script": "sam3d_objects/training/finetune_metric_scale.py",
+  "split": {
+    "heldout_categories": {
+      "bathtub": 1,
+      "books": 4,
+      "bottle": 5,
+      "bowl": 3,
+      "cabinet": 3,
+      "camera": 5,
+      "can": 4,
+      "cereal box": 2,
+      "chair": 9,
+      "cup": 5,
+      "floor mat": 1,
+      "lamp": 6,
+      "laptop": 7,
+      "machine": 1,
+      "mirror": 1,
+      "oven": 1,
+      "pillow": 1,
+      "shelves": 1,
+      "shoes": 4,
+      "sink": 1,
+      "sofa": 1,
+      "table": 5,
+      "television": 1
+    },
+    "heldout_count": 72,
+    "heldout_scenes": {
+      "11": 1,
+      "17": 1,
+      "18": 1,
+      "22": 1,
+      "23": 1,
+      "24": 2,
+      "28": 1,
+      "29": 3,
+      "3": 1,
+      "32": 1,
+      "35": 1,
+      "36": 1,
+      "42444692": 2,
+      "42444791": 1,
+      "42444872": 1,
+      "42445063": 2,
+      "42445198": 2,
+      "42897479": 1,
+      "42897509": 1,
+      "42897512": 1,
+      "42897598": 2,
+      "42897631": 2,
+      "42898169": 1,
+      "42898558": 1,
+      "5": 1,
+      "6": 1,
+      "8": 1,
+      "9": 1,
+      "cam_01": 14,
+      "scene_1": 8,
+      "scene_2": 1,
+      "scene_3": 3,
+      "scene_5": 6,
+      "scene_6": 4
+    },
+    "heldout_sources": {
+      "arkitscenes": 17,
+      "hypersim": 14,
+      "nocs_real275": 22,
+      "objectron": 19
+    },
+    "seed": 42,
+    "shuffle_split": true,
+    "split_group": "record",
+    "train_categories": {
+      "bathtub": 1,
+      "bed": 2,
+      "books": 14,
+      "bottle": 18,
+      "bowl": 14,
+      "cabinet": 24,
+      "camera": 20,
+      "can": 11,
+      "cereal box": 13,
+      "chair": 44,
+      "counter": 1,
+      "cup": 27,
+      "desk": 1,
+      "door": 1,
+      "fireplace": 1,
+      "floor mat": 1,
+      "lamp": 5,
+      "laptop": 16,
+      "picture": 2,
+      "pillow": 5,
+      "refrigerator": 1,
+      "shelves": 3,
+      "shoes": 17,
+      "sink": 4,
+      "sofa": 8,
+      "table": 10,
+      "television": 3,
+      "toilet": 1
+    },
+    "train_count": 268,
+    "train_scenes": {
+      "0": 1,
+      "1": 1,
+      "11": 1,
+      "12": 1,
+      "14": 2,
+      "15": 1,
+      "16": 2,
+      "17": 2,
+      "18": 3,
+      "2": 1,
+      "20": 2,
+      "21": 2,
+      "22": 1,
+      "23": 2,
+      "25": 2,
+      "26": 5,
+      "27": 2,
+      "28": 1,
+      "29": 2,
+      "3": 2,
+      "30": 4,
+      "31": 2,
+      "32": 3,
+      "34": 4,
+      "35": 2,
+      "36": 2,
+      "37": 1,
+      "38": 1,
+      "39": 3,
+      "4": 2,
+      "40": 1,
+      "41": 1,
+      "42": 2,
+      "42444477": 3,
+      "42444692": 1,
+      "42444791": 1,
+      "42444872": 3,
+      "42445063": 1,
+      "42445135": 1,
+      "42445198": 1,
+      "42445584": 2,
+      "42445611": 2,
+      "42445927": 3,
+      "42446561": 5,
+      "42447294": 3,
+      "42897434": 1,
+      "42897478": 3,
+      "42897479": 2,
+      "42897509": 1,
+      "42897512": 1,
+      "42897598": 1,
+      "42897631": 1,
+      "42897720": 1,
+      "42897722": 1,
+      "42898156": 1,
+      "42898163": 6,
+      "42898169": 4,
+      "42898477": 2,
+      "42898510": 6,
+      "44": 1,
+      "48": 5,
+      "5": 2,
+      "6": 3,
+      "7": 1,
+      "8": 2,
+      "9": 1,
+      "cam_01": 49,
+      "cam_04": 5,
+      "scene_1": 33,
+      "scene_2": 9,
+      "scene_3": 3,
+      "scene_4": 7,
+      "scene_5": 18,
+      "scene_6": 8
+    },
+    "train_sources": {
+      "arkitscenes": 57,
+      "hypersim": 54,
+      "nocs_real275": 78,
+      "objectron": 79
+    }
+  }
+}

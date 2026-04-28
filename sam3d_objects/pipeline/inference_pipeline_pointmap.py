@@ -469,21 +469,33 @@ class InferencePipelinePointMap(InferencePipeline):
             coords = ss_return_dict["coords"]
 
             # --- Metric scale head ---
-            # Predict log(metric_scale) from the SS latent + MoGe statistics,
-            # then inject a scale token into SLAT's cross-attention conditioning.
+            # Produces a [B, 1, 1024] token that matches cond_channels in
+            # slat_generator.yaml, so it can be appended to the SLAT condition
+            # sequence and also fed directly to MetricScaleDecoder.
             scale_token = self._compute_scale_token(
                 ss_return_dict.get("shape"),
                 ss_input_dict.get("pointmap_scale"),
                 ss_input_dict.get("pointmap_shift"),
             )
 
-            slat_backbone = self._get_slat_backbone()
-            original_embedder = None
-            if scale_token is not None and slat_backbone is not None:
-                original_embedder = slat_backbone.condition_embedder
-                slat_backbone.condition_embedder = _ScaleAugmentedEmbedderProxy(
-                    original_embedder, scale_token
-                )
+            # Inject scale token into both the backbone's internal embedder (unconditional
+            # CFG pass) and the external condition embedder (conditional pass) so that
+            # both halves of CFG guidance see the metric scale context.
+            orig_backbone_emb = None
+            orig_external_emb = None
+            slat_backbone = None
+            if scale_token is not None:
+                slat_backbone = self._get_slat_backbone()
+                if slat_backbone is not None:
+                    orig_backbone_emb = slat_backbone.condition_embedder
+                    slat_backbone.condition_embedder = _ScaleAugmentedEmbedderProxy(
+                        orig_backbone_emb, scale_token
+                    )
+                orig_external_emb = self.condition_embedders.get("slat_condition_embedder")
+                if orig_external_emb is not None:
+                    self.condition_embedders["slat_condition_embedder"] = _ScaleAugmentedEmbedderProxy(
+                        orig_external_emb, scale_token
+                    )
 
             try:
                 slat = self.sample_slat(
@@ -493,8 +505,10 @@ class InferencePipelinePointMap(InferencePipeline):
                     use_distillation=use_stage2_distillation,
                 )
             finally:
-                if original_embedder is not None and slat_backbone is not None:
-                    slat_backbone.condition_embedder = original_embedder
+                if orig_backbone_emb is not None and slat_backbone is not None:
+                    slat_backbone.condition_embedder = orig_backbone_emb
+                if orig_external_emb is not None:
+                    self.condition_embedders["slat_condition_embedder"] = orig_external_emb
             outputs = self.decode_slat(
                 slat, self.decode_formats if decode_formats is None else decode_formats
             )
@@ -503,8 +517,8 @@ class InferencePipelinePointMap(InferencePipeline):
             )
 
             # --- Metric scale decoder ---
-            # Predict physical [width, height, depth] in meters from the refined
-            # SLAT latent + the scale token produced by the scale head.
+            # Predict physical [width, height, depth] in metres from the SLAT
+            # latent + the same 1024-dim scale token used for SLAT conditioning.
             if self.metric_scale_decoder is not None and scale_token is not None:
                 with torch.no_grad():
                     metric_dims = self.metric_scale_decoder.predict_metric_dimensions(
@@ -512,7 +526,7 @@ class InferencePipelinePointMap(InferencePipeline):
                         scale_token,
                         slat.coords[:, 0],
                     )
-                outputs["metric_dimensions"] = metric_dims  # [batch, 3] in meters
+                outputs["metric_dimensions"] = metric_dims  # [batch, 3] in metres
                 outputs["metric_dimensions_cm"] = metric_dims * 100.0
             glb = outputs.get("glb", None)
             gs_input = outputs.get("gaussian", None)
@@ -589,7 +603,13 @@ class InferencePipelinePointMap(InferencePipeline):
         return x.squeeze(0)
 
     def _compute_scale_token(self, shape_latent, pointmap_scale, pointmap_shift):
-        """Run MetricScaleHead to produce a 768-dim scale conditioning token."""
+        """
+        Run MetricScaleHead and return a [B, 1, 1024] scale token, or None.
+
+        The token is 1024-dim to match cond_channels in slat_generator.yaml so it
+        can be appended to the SLAT condition sequence without a dimension mismatch,
+        and also fed directly to MetricScaleDecoder.
+        """
         if self.metric_scale_head is None or shape_latent is None:
             return None
         with torch.no_grad():
@@ -608,8 +628,10 @@ class InferencePipelinePointMap(InferencePipeline):
             self.metric_scale_head = MetricScaleHead()
         if self.metric_scale_decoder is None:
             self.metric_scale_decoder = MetricScaleDecoder()
-        self.metric_scale_head.load_state_dict(checkpoint["metric_scale_head"])
-        self.metric_scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"])
+        # strict=False: old checkpoints had ctx_channels=768; the MLP final layer and
+        # the decoder's scale_proj are now 1024-dim and will be randomly initialised.
+        self.metric_scale_head.load_state_dict(checkpoint["metric_scale_head"], strict=False)
+        self.metric_scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"], strict=False)
         self.metric_scale_head.to(self.device).eval()
         self.metric_scale_decoder.to(self.device).eval()
         logger.info(f"Loaded metric scale checkpoint from {checkpoint_path}")

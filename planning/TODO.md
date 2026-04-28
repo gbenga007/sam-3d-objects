@@ -4,7 +4,7 @@ Goal: make SAM 3D Objects physically accurate by recovering metric scale
 (real-world units), then later address near 1-to-1 geometric fidelity with the
 input object.
 
-Last updated: 2026-04-22
+Last updated: 2026-04-27
 
 ---
 
@@ -16,35 +16,48 @@ heads train successfully on OmniNOCS NOCS-Real275.
 
 Best completed runs:
 
-| Split | Train / Held-out | Held-out MAPE | Baseline MAPE | Notes |
-|---|---:|---:|---:|---|
-| Image-grouped | 2002 / 500 | 2.17% | 12.90% | Held-out cm error: W=0.43, H=0.33, D=0.25 |
-| Scene-heldout | 12882 / 3228 cached | 3.23% | 10.90% | Saved final checkpoint cm error: W=0.69, H=0.54, D=0.44 |
+| Run | Split | Train / Held-out | Held-out MAPE | Baseline MAPE | Notes |
+|---|---|---:|---:|---:|---|
+| frozen-SLAT image-grouped | Image-grouped | 2002 / 500 | 2.17% | 12.90% | cm error: W=0.43, H=0.33, D=0.25 |
+| frozen-SLAT scene-heldout 1024-dim | Scene-heldout | 12882 / 3228 | 3.09% | 10.90% | Best at epoch 175; final epoch 200 = 3.23% |
+
+Active runs:
+
+| Run | Split | Train / Held-out | Status | Notes |
+|---|---|---:|---|---|
+| SLAT-conditioned 1024-dim | Scene-heldout | 12882 / 3228 | **Running** epoch 1/20 | ~3 days; wandb: nocs_sceneholdout_slat_conditioned_1024dim |
 
 The scene-heldout best checkpoint by held-out mean absolute percentage error is
 epoch 175 at 3.09% MAPE, but only the final epoch-200 checkpoint was saved. Final
 epoch 200 improved median error but worsened mean error.
+
+Key finding (2026-04-27): `max(canonical_mesh_bbox) = 1.000 ± 0.002` is a hard
+invariant across all object categories. The mesh scale at inference time is therefore:
+`s = max(W_pred, H_pred, D_pred)` — no per-axis scaling needed.
+See: `planning/CANONICAL_MESH_BBOX_DIAGNOSTIC_2026-04-27.md`
 
 Artifacts:
 
 ```text
 /tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_cache.pt
 /tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_metrics.jsonl
-/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_cm_backfill.jsonl
 /tmp/metric_scale_omninocs_imagegroup_train2000_holdout500.pt
 
-/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt
+/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt   ← eval cache for SLAT run
 /tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_metrics.jsonl
-/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cm_backfill.jsonl
 /tmp/metric_scale_omninocs_sceneholdout_train12890_scene6.pt
+
+artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_1024dim.pt  ← in progress
 ```
 
-Current implemented design:
+Planning docs:
 
 ```text
 planning/CURRENT_METRIC_READOUT_DESIGN_2026-04-22.md
 planning/MIXED_OMNINOCS_TRAINING_STATUS_2026-04-22.md
-planning/OMNINOCS_RGB_DOWNLOAD_STATUS_2026-04-22.md
+planning/SLAT_CONDITIONED_METRIC_TRAINING_2026-04-27.md      ← architecture + training command
+planning/CANONICAL_MESH_BBOX_DIAGNOSTIC_2026-04-27.md        ← bbox invariant finding
+planning/METRIC_TOKEN_STAGE2_MESH_PLAN_2026-04-23.md
 ```
 
 Durable reproducibility artifacts:
@@ -106,11 +119,31 @@ artifacts/metric_scale/metrics/
 - [x] Added metric-head checkpoint loading to `InferencePipelinePointMap`.
 - [x] Added inference outputs for predicted metric dimensions in meters and centimeters.
 
+### Completed (continued)
+
+- [x] Updated `MetricScaleHead` output dim 768 → 1024 to match SLAT `cond_channels`.
+- [x] Updated `MetricScaleDecoder` scale_token_dim 768 → 1024.
+- [x] Implemented `collect_slat_cross_attn_params()`: unfreezes cross_attn + norm2
+      in all 24 SLAT blocks (~100M params) while keeping self-attn, FFN, adaLN frozen.
+- [x] Added `--unfreeze-slat-cross-attn`, `--slat-lr` (default 1e-5), `--eval-feature-cache`
+      flags to `finetune_metric_scale.py`.
+- [x] Wired scale token injection into SLAT live training path (no_grad removed from
+      SLAT when unfreeze_cross_attn=True; two-group AdamW optimizer).
+- [x] Validated incompatibility guard: `--unfreeze-slat-cross-attn` blocks `--cache-latents`.
+- [x] Ran canonical mesh bbox diagnostic (25 NOCS-Real275 samples, 6 categories):
+      confirmed `max(canonical_bbox) = 1.000 ± 0.002` hard invariant.
+      Inference formula: `s = max(W_pred, H_pred, D_pred)`.
+      See: `planning/CANONICAL_MESH_BBOX_DIAGNOSTIC_2026-04-27.md`
+- [x] Launched SLAT-conditioned training: 20 epochs, 12882/3228 scene-heldout,
+      wandb run `nocs_sceneholdout_slat_conditioned_1024dim`.
+      Architecture doc: `planning/SLAT_CONDITIONED_METRIC_TRAINING_2026-04-27.md`
+
 ### Remaining
 
-- [ ] If scale-aware generation is still desired, align the scale-token dimension
-      with the live SLAT condition tokens and partially unfreeze or adapt SLAT
-      cross-attention so generation itself learns to use the scale token.
+- [ ] Compare SLAT-conditioned MAPE vs frozen-SLAT 3.09% baseline after epoch 5 eval.
+- [ ] Ablate: metric token injection without cross-attn unfreeze (pure injection into frozen SLAT).
+- [ ] Choose and document the first mesh-supervised dataset for stage-2 fidelity
+      experiments.
 
 ---
 
@@ -202,6 +235,12 @@ model, not just metric readout heads.
       3D scans of real objects.
 - [ ] Implement training with combined flow matching and reconstruction losses.
 - [ ] Evaluate Chamfer distance and F-score on held-out scans.
+
+See also:
+
+```text
+planning/METRIC_TOKEN_STAGE2_MESH_PLAN_2026-04-23.md
+```
 
 ---
 

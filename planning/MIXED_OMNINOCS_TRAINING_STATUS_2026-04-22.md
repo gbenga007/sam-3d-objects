@@ -121,3 +121,83 @@ python sam3d_objects/training/finetune_metric_scale.py \
   --manifest-output artifacts/metric_scale/manifests/metric_scale_omninocs_mixed_nocs_objectron_manifest.json \
   --cache-only
 ```
+
+## 2026-04-23 Update
+
+Mixed OmniNOCS loading is now working across all four sources with local RGB:
+
+```text
+total object instances: 1,217,988
+  hypersim: 1,025,834
+  arkitscenes: 169,678
+  nocs_real275: 16,118
+  objectron: 6,358
+```
+
+Unique images currently visible to the loader:
+
+```text
+hypersim: 49,917
+arkitscenes: 47,015
+nocs_real275: 2,754
+objectron: 5,295
+```
+
+The earlier 400-example mixed run was intentionally bounded with:
+
+```text
+--max-records-per-source 100
+```
+
+For the next larger-scale experiment, the practical all-source balanced cap is
+set by Objectron, which currently has 6,358 object instances. The next run will
+therefore use all Objectron records and match the other three sources to that
+cap instead of letting Hypersim dominate the training pool.
+
+Planned larger balanced run:
+
+```bash
+env LIDRA_SKIP_INIT=1 ATTN_BACKEND=sdpa SPARSE_ATTN_BACKEND=sdpa \
+/root/.local/bin/micromamba run -n sam3d-objects \
+python sam3d_objects/training/finetune_metric_scale.py \
+  --dataset omninocs-mixed \
+  --omninocs-root /mnt/dest/OmniNOCS \
+  --omninocs-sources nocs_real275 objectron arkitscenes hypersim \
+  --rgb-root /mnt/dest/OmniNOCS/real_test \
+  --objectron-rgb-root /mnt/dest/OmniNOCS/omni3d_rgb \
+  --arkitscenes-rgb-root /mnt/dest/OmniNOCS/omni3d_rgb \
+  --hypersim-rgb-root /mnt/dest/OmniNOCS/omni3d_rgb/hypersim \
+  --cache-latents \
+  --max-records-per-source 6358 \
+  --overfit-samples 23000 \
+  --heldout-samples 2400 \
+  --shuffle-split \
+  --split-group image \
+  --seed 42 \
+  --epochs 20 \
+  --batch-size 512 \
+  --eval-every 5 \
+  --stage1-steps 1 \
+  --stage2-steps 1 \
+  --device cuda \
+  --wandb \
+  --wandb-mode offline \
+  --wandb-project sam3d-metric-scale \
+  --wandb-run-name mixed_omninocs_balanced_6358_per_source_bs512 \
+  --metrics-output artifacts/metric_scale/metrics/mixed_omninocs_balanced_6358_per_source_bs512_eval.jsonl \
+  --manifest-output artifacts/metric_scale/manifests/mixed_omninocs_balanced_6358_per_source_bs512_manifest.json \
+  --save-feature-cache /tmp/mixed_omninocs_balanced_6358_per_source_bs512_cache.pt \
+  --output artifacts/metric_scale/checkpoints/mixed_omninocs_balanced_6358_per_source_bs512.pt
+```
+
+Notes:
+
+- `batch-size` only affects the metric-head optimization phase. The expensive
+  part of this workflow is still latent caching, which currently processes
+  images one at a time through the frozen SAM 3D pipeline.
+- `split-group image` is preferred over `record` for mixed experiments because
+  it avoids placing different objects from the same frame into both train and
+  held-out splits.
+- W&B is currently configured for `offline` mode in this environment because no
+  login credentials are present. The run will still emit structured W&B logs
+  locally and can be synced later if desired.

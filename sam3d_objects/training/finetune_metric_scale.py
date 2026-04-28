@@ -2,10 +2,17 @@
 """
 Fine-tune the metric-scale heads on OmniNOCS NOCS-Real275.
 
-This is intentionally NOCS-first and conservative: the SAM 3D backbone stays
-frozen, SS/SLAT latents are generated under no-grad, and only the lightweight
-MetricScaleHead + MetricScaleDecoder receive gradients. The script is designed
-to overfit a tiny sample set before scaling to larger data.
+Two training modes:
+
+Cached (default): SAM 3D backbone fully frozen. SS/SLAT latents are precomputed
+once and cached; only MetricScaleHead + MetricScaleDecoder receive gradients.
+Fast, but SLAT features are fixed.
+
+SLAT-conditioned (--unfreeze-slat-cross-attn): The cross-attention layers in
+all 24 SLatFlowModel transformer blocks are selectively unfrozen alongside the
+metric heads. The scale token is injected into SLAT conditioning every step so
+the denoiser learns to produce scale-aware geometry. Incompatible with caching;
+requires --stage2-steps 1 to keep SLAT a single forward pass.
 """
 
 from __future__ import annotations
@@ -28,7 +35,7 @@ from tqdm import tqdm
 
 from sam3d_objects.data.dataset.metric import OmniNOCSObjectDataset, OmniNOCSReal275Dataset
 from sam3d_objects.model.backbone.metric_scale_decoder import MetricScaleDecoder
-from sam3d_objects.model.backbone.scale_head import MetricScaleHead
+from sam3d_objects.model.backbone.scale_head import MetricScaleHead, _ScaleAugmentedEmbedderProxy
 
 
 class DeviceOnlyPipeline:
@@ -57,6 +64,42 @@ def freeze_pipeline(pipeline) -> None:
         model.eval()
         for param in model.parameters():
             param.requires_grad_(False)
+
+
+def collect_slat_cross_attn_params(pipeline) -> tuple[list, object]:
+    """
+    Selectively unfreeze the cross-attention layers (cross_attn + norm2) in
+    every SLatFlowModel transformer block after freeze_pipeline has run.
+
+    Returns (unfrozen_param_list, slat_backbone).  The backbone reference is
+    needed to save its state dict in the checkpoint.
+    """
+    try:
+        backbone = pipeline.models["slat_generator"].reverse_fn.backbone
+    except (AttributeError, KeyError) as exc:
+        raise RuntimeError(
+            "Cannot locate slat_generator.reverse_fn.backbone — "
+            "is the pipeline fully loaded?"
+        ) from exc
+
+    unfrozen: list = []
+    for block in backbone.blocks:
+        for p in block.cross_attn.parameters():
+            p.requires_grad_(True)
+            unfrozen.append(p)
+        for p in block.norm2.parameters():
+            p.requires_grad_(True)
+            unfrozen.append(p)
+        block.cross_attn.train()
+        block.norm2.train()
+
+    n_blocks = len(backbone.blocks)
+    n_params = sum(p.numel() for p in unfrozen)
+    print(
+        f"Unfrozen SLAT cross-attn in {n_blocks} blocks "
+        f"({n_params:,} params across cross_attn + norm2)"
+    )
+    return unfrozen, backbone
 
 
 def load_pipeline(config_path: str, device: str, compile_model: bool = False):
@@ -123,7 +166,21 @@ def predict_log_dims(
     image,
     stage1_steps: int | None,
     stage2_steps: int | None,
+    inject_scale_token: bool = False,
+    unfreeze_cross_attn: bool = False,
 ) -> torch.Tensor:
+    """
+    Run the full SAM3D pipeline and return predicted log-dimensions.
+
+    inject_scale_token: append the scale token to SLAT conditioning before
+        each denoiser step.
+
+    unfreeze_cross_attn: when True, SLAT runs WITHOUT torch.no_grad() so
+        gradients flow through the unfrozen cross-attention layers back to the
+        scale token and MetricScaleHead.  scale_token and slat.feats are not
+        detached.  Requires inject_scale_token=True and --stage2-steps 1 to
+        keep the backward graph tractable.
+    """
     with pipeline.device:
         pointmap_dict = pipeline.compute_pointmap(image)
         ss_input_dict = pipeline.preprocess_image(
@@ -131,26 +188,75 @@ def predict_log_dims(
         )
         slat_input_dict = pipeline.preprocess_image(image, pipeline.slat_preprocessor)
 
+        # SS stage: always frozen.
         with torch.no_grad():
             ss_return_dict = pipeline.sample_sparse_structure(
                 ss_input_dict,
                 inference_steps=stage1_steps,
                 use_distillation=False,
             )
-            slat = pipeline.sample_slat(
-                slat_input_dict,
-                ss_return_dict["coords"],
-                inference_steps=stage2_steps,
-                use_distillation=False,
-            )
 
+        # Scale token computed with gradient — feeds both SLAT conditioning and
+        # the decoder directly.
         scale_token = scale_head(
             ss_return_dict["shape"].detach(),
             ss_input_dict.get("pointmap_scale"),
             ss_input_dict.get("pointmap_shift"),
         )
+
+        # Inject the scale token into SLAT conditioning.
+        # When cross-attn is frozen: detach the token so gradients stay in the
+        # metric heads only.  When cross-attn is unfrozen: keep the token live
+        # so gradients flow through cross_attn.to_kv back to MetricScaleHead.
+        orig_backbone_emb = None
+        orig_external_emb = None
+        slat_backbone = None
+        if inject_scale_token and hasattr(pipeline, "_get_slat_backbone"):
+            token_for_cond = scale_token if unfreeze_cross_attn else scale_token.detach()
+            slat_backbone = pipeline._get_slat_backbone()
+            if slat_backbone is not None:
+                orig_backbone_emb = slat_backbone.condition_embedder
+                slat_backbone.condition_embedder = _ScaleAugmentedEmbedderProxy(
+                    orig_backbone_emb, token_for_cond
+                )
+            cond_embedders = getattr(pipeline, "condition_embedders", {})
+            orig_external_emb = cond_embedders.get("slat_condition_embedder")
+            if orig_external_emb is not None:
+                pipeline.condition_embedders["slat_condition_embedder"] = (
+                    _ScaleAugmentedEmbedderProxy(orig_external_emb, token_for_cond)
+                )
+
+        try:
+            if unfreeze_cross_attn:
+                # Run SLAT with gradients so backprop reaches the unfrozen
+                # cross-attention layers.  Frozen params (self-attn, FFN, adaLN)
+                # have requires_grad=False and won't accumulate .grad, but
+                # activations still flow through them.
+                slat = pipeline.sample_slat(
+                    slat_input_dict,
+                    ss_return_dict["coords"],
+                    inference_steps=stage2_steps,
+                    use_distillation=False,
+                )
+            else:
+                with torch.no_grad():
+                    slat = pipeline.sample_slat(
+                        slat_input_dict,
+                        ss_return_dict["coords"],
+                        inference_steps=stage2_steps,
+                        use_distillation=False,
+                    )
+        finally:
+            if orig_backbone_emb is not None and slat_backbone is not None:
+                slat_backbone.condition_embedder = orig_backbone_emb
+            if orig_external_emb is not None:
+                pipeline.condition_embedders["slat_condition_embedder"] = orig_external_emb
+
+        # When cross-attn is unfrozen, don't detach slat.feats — gradients must
+        # flow from the decoder through SLAT back to the scale token.
+        slat_feats = slat.feats if unfreeze_cross_attn else slat.feats.detach()
         return scale_decoder(
-            slat.feats.detach(),
+            slat_feats,
             scale_token,
             slat.coords[:, 0],
         )
@@ -570,19 +676,27 @@ def save_metric_checkpoint(
     args,
     epoch: int | None = None,
     metrics: dict | None = None,
+    slat_backbone=None,
 ) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "metric_scale_head": scale_head.state_dict(),
-            "metric_scale_decoder": scale_decoder.state_dict(),
-            "args": vars(args),
-            "epoch": epoch,
-            "metrics": metrics,
-        },
-        output_path,
-    )
+    payload = {
+        "metric_scale_head": scale_head.state_dict(),
+        "metric_scale_decoder": scale_decoder.state_dict(),
+        "args": vars(args),
+        "epoch": epoch,
+        "metrics": metrics,
+    }
+    if slat_backbone is not None:
+        # Save only the cross_attn + norm2 params that were actually trained.
+        cross_attn_state = {}
+        for i, block in enumerate(slat_backbone.blocks):
+            for k, v in block.cross_attn.state_dict().items():
+                cross_attn_state[f"blocks.{i}.cross_attn.{k}"] = v
+            for k, v in block.norm2.state_dict().items():
+                cross_attn_state[f"blocks.{i}.norm2.{k}"] = v
+        payload["slat_cross_attn"] = cross_attn_state
+    torch.save(payload, output_path)
 
 
 def category_mean_baseline(train_cache: list[dict], eval_cache: list[dict]) -> dict | None:
@@ -728,18 +842,29 @@ def cache_metric_scale_features(
     desc: str,
 ) -> list[dict]:
     feature_cache = []
+    skipped_errors = 0
     for item in tqdm(dataset, desc=desc):
         if int(item["mask_pixels"]) < min_mask_pixels:
             continue
-        feature_cache.append(
-            encode_metric_scale_features(
-                pipeline,
-                item,
-                torch.as_tensor(item["metric_dims"], dtype=torch.float32),
-                stage1_steps,
-                stage2_steps,
+        try:
+            feature_cache.append(
+                encode_metric_scale_features(
+                    pipeline,
+                    item,
+                    torch.as_tensor(item["metric_dims"], dtype=torch.float32),
+                    stage1_steps,
+                    stage2_steps,
+                )
             )
-        )
+        except Exception as exc:
+            skipped_errors += 1
+            print(
+                "Skipping feature-cache example due to pipeline error: "
+                f"uid={item.get('uid')} source={item.get('source')} "
+                f"image_name={item.get('image_name')} error={exc}"
+            )
+    if skipped_errors:
+        print(f"{desc}: skipped {skipped_errors} examples due to pipeline errors")
     return feature_cache
 
 
@@ -786,8 +911,10 @@ def load_metric_checkpoint(
     scale_decoder: MetricScaleDecoder,
 ) -> dict:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    scale_head.load_state_dict(checkpoint["metric_scale_head"])
-    scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"])
+    # strict=False: old checkpoints had ctx_channels=768; the MLP final layer and
+    # the decoder's scale_proj changed to 1024-dim and will be randomly initialised.
+    scale_head.load_state_dict(checkpoint["metric_scale_head"], strict=False)
+    scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"], strict=False)
     print(f"Loaded metric scale checkpoint from {path}")
     return checkpoint.get("args", {})
 
@@ -922,6 +1049,49 @@ def main() -> None:
         help="Evaluate a loaded checkpoint on cached train/held-out features, then exit.",
     )
     parser.add_argument(
+        "--inject-scale-token-into-slat",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "In the non-cached training path, inject the metric scale token from "
+            "stage-1 into SLAT stage-2 conditioning (both the conditional and "
+            "unconditional CFG passes) before the SLAT sampler runs. This aligns "
+            "training with inference behavior. Has no effect when --cache-latents "
+            "or --load-feature-cache is used, since SLAT features are precomputed "
+            "in those modes."
+        ),
+    )
+    parser.add_argument(
+        "--unfreeze-slat-cross-attn",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Selectively unfreeze the cross-attention layers (cross_attn + norm2) "
+            "in all 24 SLatFlowModel transformer blocks so the denoiser learns to "
+            "use the metric scale token. Implies --inject-scale-token-into-slat. "
+            "Incompatible with --cache-latents and --load-feature-cache."
+        ),
+    )
+    parser.add_argument(
+        "--slat-lr",
+        type=float,
+        default=1e-5,
+        help=(
+            "Learning rate for the SLAT cross-attention params when "
+            "--unfreeze-slat-cross-attn is set. Should be lower than --lr to "
+            "avoid catastrophic forgetting of the DINOv2 conditioning."
+        ),
+    )
+    parser.add_argument(
+        "--eval-feature-cache",
+        default=None,
+        help=(
+            "Pre-baked feature cache (.pt) used for periodic eval during live "
+            "(non-cached) training. Provides a cheap proxy metric without re-running "
+            "the full pipeline on the held-out set every eval epoch."
+        ),
+    )
+    parser.add_argument(
         "--metrics-output",
         default=None,
         help="Optional JSONL path for baseline/train/held-out eval metrics.",
@@ -969,6 +1139,20 @@ def main() -> None:
 
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false.")
+
+    if args.unfreeze_slat_cross_attn and (args.cache_latents or args.load_feature_cache):
+        raise RuntimeError(
+            "--unfreeze-slat-cross-attn is incompatible with --cache-latents and "
+            "--load-feature-cache. SLAT must be re-run every step so the cross-attn "
+            "layers see the current scale token."
+        )
+
+    if args.unfreeze_slat_cross_attn and not args.inject_scale_token_into_slat:
+        print(
+            "Note: --unfreeze-slat-cross-attn implies --inject-scale-token-into-slat; "
+            "enabling injection automatically."
+        )
+        args.inject_scale_token_into_slat = True
 
     wandb_run = init_wandb(args)
 
@@ -1040,6 +1224,20 @@ def main() -> None:
     if args.load_checkpoint:
         load_metric_checkpoint(args.load_checkpoint, scale_head, scale_decoder)
 
+    # Selectively unfreeze SLAT cross-attn after all other pipeline params are
+    # frozen.  collect_slat_cross_attn_params flips requires_grad back to True
+    # on cross_attn + norm2 in all 24 blocks and returns the param list.
+    slat_backbone = None
+    slat_cross_attn_params = []
+    if args.unfreeze_slat_cross_attn:
+        slat_cross_attn_params, slat_backbone = collect_slat_cross_attn_params(pipeline)
+
+    # Load a separate eval cache for the non-cached training path.
+    eval_feature_cache: list[dict] = []
+    eval_heldout_cache: list[dict] = []
+    if args.eval_feature_cache and not (args.cache_latents or args.load_feature_cache):
+        eval_feature_cache, eval_heldout_cache, _ = load_feature_cache(args.eval_feature_cache)
+
     if args.eval_only:
         if not args.load_feature_cache:
             raise RuntimeError("--eval-only requires --load-feature-cache.")
@@ -1082,8 +1280,16 @@ def main() -> None:
             wandb_run.finish()
         return
 
+    param_groups = [
+        {
+            "params": list(scale_head.parameters()) + list(scale_decoder.parameters()),
+            "lr": args.lr,
+        }
+    ]
+    if slat_cross_attn_params:
+        param_groups.append({"params": slat_cross_attn_params, "lr": args.slat_lr})
     optimizer = torch.optim.AdamW(
-        list(scale_head.parameters()) + list(scale_decoder.parameters()),
+        param_groups,
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
@@ -1171,6 +1377,7 @@ def main() -> None:
                             args,
                             epoch + 1,
                             heldout_metrics,
+                            slat_backbone=slat_backbone,
                         )
                         print(
                             f"Saved best metric scale checkpoint to {best_output} "
@@ -1186,6 +1393,18 @@ def main() -> None:
                             step=epoch + 1,
                         )
     else:
+        best_heldout_mean_abs_pct = float("inf")
+        best_output = args.best_output or default_best_output_path(args.output)
+        best_metrics = None
+
+        # Baseline eval against the eval cache (if provided) before any training.
+        if eval_heldout_cache and args.eval_every:
+            baseline_metrics = category_mean_baseline(eval_feature_cache, eval_heldout_cache)
+            if baseline_metrics is not None:
+                print(format_metrics("category_baseline_heldout", None, baseline_metrics))
+                write_metrics(args.metrics_output, "category_baseline_heldout", None, baseline_metrics)
+                wandb_log(wandb_run, flatten_metrics("category_baseline_heldout", baseline_metrics))
+
         for epoch in range(args.epochs):
             running_loss = 0.0
             running_count = 0
@@ -1205,6 +1424,8 @@ def main() -> None:
                         image,
                         args.stage1_steps,
                         args.stage2_steps,
+                        inject_scale_token=args.inject_scale_token_into_slat,
+                        unfreeze_cross_attn=args.unfreeze_slat_cross_attn,
                     )
                     log_target = torch.log(metric_dims.to(pipeline.device).clamp(min=1e-6))
                     losses.append(F.smooth_l1_loss(log_pred[0], log_target))
@@ -1222,20 +1443,63 @@ def main() -> None:
                 progress.set_postfix(loss=running_loss / max(running_count, 1))
 
             epoch_loss = running_loss / max(running_count, 1)
-            wandb_log(
-                wandb_run,
-                {
-                    "epoch": epoch + 1,
-                    "train_epoch/loss": epoch_loss,
-                    "train_epoch/examples": running_count,
-                    "train_epoch/lr": optimizer.param_groups[0]["lr"],
-                },
-                step=epoch + 1,
-            )
+            wandb_payload = {
+                "epoch": epoch + 1,
+                "train_epoch/loss": epoch_loss,
+                "train_epoch/examples": running_count,
+                "train_epoch/lr": optimizer.param_groups[0]["lr"],
+            }
+            if slat_cross_attn_params:
+                wandb_payload["train_epoch/slat_lr"] = optimizer.param_groups[1]["lr"]
+            wandb_log(wandb_run, wandb_payload, step=epoch + 1)
+
+            # Periodic eval against the pre-baked eval feature cache.
+            if args.eval_every and (epoch + 1) % args.eval_every == 0 and eval_heldout_cache:
+                eval_metrics = evaluate_and_record(
+                    pipeline,
+                    scale_head,
+                    scale_decoder,
+                    eval_feature_cache,
+                    eval_heldout_cache,
+                    args.metrics_output,
+                    wandb_run,
+                    epoch + 1,
+                )
+                heldout_metrics = eval_metrics.get("heldout")
+                if heldout_metrics is not None:
+                    heldout_mean_abs_pct = heldout_metrics["mean_abs_pct"]
+                    if heldout_mean_abs_pct < best_heldout_mean_abs_pct:
+                        best_heldout_mean_abs_pct = heldout_mean_abs_pct
+                        best_metrics = heldout_metrics
+                        save_metric_checkpoint(
+                            best_output,
+                            scale_head,
+                            scale_decoder,
+                            args,
+                            epoch + 1,
+                            heldout_metrics,
+                            slat_backbone=slat_backbone,
+                        )
+                        print(
+                            f"Saved best checkpoint to {best_output} "
+                            f"(epoch={epoch + 1}, heldout_mean_abs_pct={heldout_mean_abs_pct:.2f})"
+                        )
+                        wandb_log(
+                            wandb_run,
+                            {
+                                "best/epoch": epoch + 1,
+                                "best/heldout_mean_abs_pct": heldout_mean_abs_pct,
+                                "best/checkpoint_path": best_output,
+                            },
+                            step=epoch + 1,
+                        )
 
     output_path = Path(args.output)
-    save_metric_checkpoint(str(output_path), scale_head, scale_decoder, args)
+    save_metric_checkpoint(
+        str(output_path), scale_head, scale_decoder, args, slat_backbone=slat_backbone
+    )
     print(f"Saved metric scale checkpoint to {output_path}")
+    has_cache = args.cache_latents or args.load_feature_cache
     write_manifest(
         args.manifest_output,
         args,
@@ -1243,11 +1507,9 @@ def main() -> None:
         heldout_cache,
         checkpoint_path=str(output_path),
         best_checkpoint_path=(
-            best_output
-            if (args.cache_latents or args.load_feature_cache) and best_metrics is not None
-            else None
+            best_output if best_metrics is not None else None
         ),
-        best_metrics=best_metrics if args.cache_latents or args.load_feature_cache else None,
+        best_metrics=best_metrics,
         cache_path=args.load_feature_cache or args.save_feature_cache,
     )
     wandb_log(wandb_run, {"final/checkpoint_path": str(output_path)})

@@ -132,6 +132,45 @@ sources [('arkitscenes', 5), ('hypersim', 5), ('nocs_real275', 5), ('objectron',
 first nocs_real275 nocs_real275/test/scene_1/0066 (480, 640, 4)
 ```
 
+Targeted Hypersim follow-up:
+
+- Full `.tonemap.jpg` crawl was not a good fit for resume/recovery.
+- A targeted helper was added:
+
+```text
+scripts/download_targeted_hypersim_rgb.py
+```
+
+- Current OmniNOCS Hypersim reference counts:
+
+```text
+unique_frames   50319
+existing        33260
+missing         17059
+missing_scenes  88
+missing_cameras 181
+```
+
+- The targeted strategy groups missing RGB by `scene/camera` and downloads
+  entire missing preview camera trajectories with the official Hypersim helper.
+
+Targeted download command now in use:
+
+```bash
+python scripts/download_targeted_hypersim_rgb.py
+```
+
+Initial confirmation after launch:
+
+```text
+before targeted fetch: 51512 files
+after initial targeted fetch check: 51580 files
+new files in last 2 minutes: 72
+```
+
+This confirms the targeted camera-level fetch is making forward progress, unlike
+the previous full `.tonemap.jpg` crawl.
+
 Disk after extracting Objectron and ARKitScenes while Hypersim continued:
 
 ```text
