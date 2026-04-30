@@ -35,7 +35,11 @@ from tqdm import tqdm
 
 from sam3d_objects.data.dataset.metric import OmniNOCSObjectDataset, OmniNOCSReal275Dataset
 from sam3d_objects.model.backbone.metric_scale_decoder import MetricScaleDecoder
-from sam3d_objects.model.backbone.scale_head import MetricScaleHead, _ScaleAugmentedEmbedderProxy
+from sam3d_objects.model.backbone.scale_head import (
+    MetricScaleHead,
+    _ScaleAugmentedEmbedderProxy,
+    extract_ss_scale_features,
+)
 
 
 class DeviceOnlyPipeline:
@@ -197,9 +201,13 @@ def predict_log_dims(
             )
 
         # Scale token computed with gradient — feeds both SLAT conditioning and
-        # the decoder directly.
+        # the decoder directly.  SS scale features are detached (SS is frozen).
+        ss_scale_features = extract_ss_scale_features(ss_return_dict)
+        if ss_scale_features is not None:
+            ss_scale_features = ss_scale_features.detach().to(pipeline.device)
         scale_token = scale_head(
             ss_return_dict["shape"].detach(),
+            ss_scale_features,
             ss_input_dict.get("pointmap_scale"),
             ss_input_dict.get("pointmap_shift"),
         )
@@ -279,8 +287,12 @@ def encode_metric_scale_features(
 
     pointmap_scale = ss_input_dict.get("pointmap_scale")
     pointmap_shift = ss_input_dict.get("pointmap_shift")
+    ss_scale_features = extract_ss_scale_features(ss_return_dict)
     return {
         "shape": ss_return_dict["shape"].detach().cpu(),
+        "ss_scale_features": (
+            None if ss_scale_features is None else ss_scale_features.detach().cpu()
+        ),
         "pointmap_scale": None if pointmap_scale is None else pointmap_scale.detach().cpu(),
         "pointmap_shift": None if pointmap_shift is None else pointmap_shift.detach().cpu(),
         "slat_feats": slat.feats.detach().cpu(),
@@ -307,7 +319,13 @@ def predict_cached_log_dims(
     if pointmap_shift is not None:
         pointmap_shift = pointmap_shift.to(pipeline.device)
 
-    scale_token = scale_head(shape, pointmap_scale, pointmap_shift)
+    # Older caches (pre-2026-04-30) lack ss_scale_features — pass None and let
+    # MetricScaleHead zero-fill so this script can still consume them.
+    ss_scale_features = features.get("ss_scale_features")
+    if ss_scale_features is not None:
+        ss_scale_features = ss_scale_features.to(pipeline.device)
+
+    scale_token = scale_head(shape, ss_scale_features, pointmap_scale, pointmap_shift)
     return scale_decoder(
         features["slat_feats"].to(pipeline.device),
         scale_token,

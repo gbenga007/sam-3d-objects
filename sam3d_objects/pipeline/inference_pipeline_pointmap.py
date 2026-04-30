@@ -16,6 +16,7 @@ from sam3d_objects.model.backbone.dit.embedder.pointmap import PointPatchEmbed
 from sam3d_objects.model.backbone.scale_head import (
     MetricScaleHead,
     _ScaleAugmentedEmbedderProxy,
+    extract_ss_scale_features,
 )
 from sam3d_objects.model.backbone.metric_scale_decoder import MetricScaleDecoder
 from sam3d_objects.pipeline.inference_pipeline import InferencePipeline
@@ -472,8 +473,16 @@ class InferencePipelinePointMap(InferencePipeline):
             # Produces a [B, 1, 1024] token that matches cond_channels in
             # slat_generator.yaml, so it can be appended to the SLAT condition
             # sequence and also fed directly to MetricScaleDecoder.
+            #
+            # The SS generator's `scale` token (log-SSI scale, supervised with
+            # loss_weight=0.1) is passed to the head as an additional input;
+            # it absorbs full-image + cropped DINOv2 + pointmap context via the
+            # SS condition embedder.  Pose-related SS outputs are intentionally
+            # excluded — they describe object placement, not size.
+            ss_scale_features = extract_ss_scale_features(ss_return_dict)
             scale_token = self._compute_scale_token(
                 ss_return_dict.get("shape"),
+                ss_scale_features,
                 ss_input_dict.get("pointmap_scale"),
                 ss_input_dict.get("pointmap_shift"),
             )
@@ -602,18 +611,31 @@ class InferencePipelinePointMap(InferencePipeline):
         )  # -> (1, 3, H/4, W/4)
         return x.squeeze(0)
 
-    def _compute_scale_token(self, shape_latent, pointmap_scale, pointmap_shift):
+    def _compute_scale_token(
+        self,
+        shape_latent,
+        ss_scale_features,
+        pointmap_scale,
+        pointmap_shift,
+    ):
         """
         Run MetricScaleHead and return a [B, 1, 1024] scale token, or None.
 
         The token is 1024-dim to match cond_channels in slat_generator.yaml so it
         can be appended to the SLAT condition sequence without a dimension mismatch,
         and also fed directly to MetricScaleDecoder.
+
+        ss_scale_features: [B, 3] tensor of the SS generator's `scale` token
+            (log-SSI scale per axis), or None if the SS generator did not
+            provide it (e.g. non-MM-DiT). The head zero-fills in that case
+            for backward compatibility.
         """
         if self.metric_scale_head is None or shape_latent is None:
             return None
         with torch.no_grad():
-            return self.metric_scale_head(shape_latent, pointmap_scale, pointmap_shift)
+            return self.metric_scale_head(
+                shape_latent, ss_scale_features, pointmap_scale, pointmap_shift,
+            )
 
     def load_metric_scale_checkpoint(self, checkpoint_path: str | None):
         if checkpoint_path is None:
