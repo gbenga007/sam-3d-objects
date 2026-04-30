@@ -729,6 +729,7 @@ class InferencePipeline:
         coords: torch.Tensor,
         inference_steps=25,
         use_distillation=False,
+        with_grad: bool = False,
     ) -> sp.SparseTensor:
         image = slat_input["image"]
         DEVICE = image.device
@@ -752,8 +753,11 @@ class InferencePipeline:
             slat_generator.rescale_t,
         )
 
+        # with_grad=True is required when training unfrozen SLAT cross-attention
+        # so backprop reaches the metric scale token through cross_attn.to_kv.
+        grad_ctx = torch.enable_grad() if with_grad else torch.no_grad()
         with torch.autocast(device_type="cuda", dtype=self.dtype):
-            with torch.no_grad():
+            with grad_ctx:
                 condition_args, condition_kwargs = self.get_condition_input(
                     self.condition_embedders["slat_condition_embedder"],
                     slat_input,

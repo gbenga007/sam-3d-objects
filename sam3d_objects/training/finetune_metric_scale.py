@@ -227,25 +227,13 @@ def predict_log_dims(
                 )
 
         try:
-            if unfreeze_cross_attn:
-                # Run SLAT with gradients so backprop reaches the unfrozen
-                # cross-attention layers.  Frozen params (self-attn, FFN, adaLN)
-                # have requires_grad=False and won't accumulate .grad, but
-                # activations still flow through them.
-                slat = pipeline.sample_slat(
-                    slat_input_dict,
-                    ss_return_dict["coords"],
-                    inference_steps=stage2_steps,
-                    use_distillation=False,
-                )
-            else:
-                with torch.no_grad():
-                    slat = pipeline.sample_slat(
-                        slat_input_dict,
-                        ss_return_dict["coords"],
-                        inference_steps=stage2_steps,
-                        use_distillation=False,
-                    )
+            slat = pipeline.sample_slat(
+                slat_input_dict,
+                ss_return_dict["coords"],
+                inference_steps=stage2_steps,
+                use_distillation=False,
+                with_grad=unfreeze_cross_attn,
+            )
         finally:
             if orig_backbone_emb is not None and slat_backbone is not None:
                 slat_backbone.condition_embedder = orig_backbone_emb
@@ -1449,6 +1437,8 @@ def main() -> None:
             if args.checkpoint_every else None
         )
 
+        slat_grad_verified = not args.unfreeze_slat_cross_attn
+
         for epoch in range(resume_start_epoch, args.epochs):
             running_loss = 0.0
             running_count = 0
@@ -1479,6 +1469,15 @@ def main() -> None:
 
                 loss = torch.stack(losses).mean()
                 loss.backward()
+                if not slat_grad_verified:
+                    if not any(p.grad is not None for p in slat_cross_attn_params):
+                        raise RuntimeError(
+                            "SLAT cross-attention parameters received no gradient on the "
+                            "first backward pass. This typically means sample_slat is wrapping "
+                            "the generator forward in torch.no_grad() — pass with_grad=True "
+                            "to allow gradient flow through cross_attn.to_kv."
+                        )
+                    slat_grad_verified = True
                 optimizer.step()
 
                 batch_count = len(losses)
