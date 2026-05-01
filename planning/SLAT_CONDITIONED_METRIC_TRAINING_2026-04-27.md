@@ -162,48 +162,65 @@ to SLAT conditioning rather than data differences.
 
 ---
 
-## Training Command
+## Actual Training Command (v1, launched 2026-05-01)
 
-```bash
-env LIDRA_SKIP_INIT=1 ATTN_BACKEND=sdpa SPARSE_ATTN_BACKEND=sdpa \
-/root/.local/bin/micromamba run -n sam3d-objects \
-python sam3d_objects/training/finetune_metric_scale.py \
-  --annotations-root /mnt/dest/OmniNOCS/omninocs_release_nocs_real275 \
-  --rgb-root /mnt/dest/OmniNOCS/real_test \
-  --split train \
-  --split-group scene \
-  --overfit-samples 12882 \
-  --heldout-samples 3228 \
-  --seed 42 \
-  --epochs 20 \
-  --batch-size 1 \
-  --lr 1e-4 \
-  --stage1-steps 1 \
-  --stage2-steps 1 \
-  --device cuda \
-  --inject-scale-token-into-slat \
-  --unfreeze-slat-cross-attn \
-  --slat-lr 1e-5 \
-  --eval-feature-cache /tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt \
-  --eval-every 5 \
-  --wandb \
-  --wandb-mode online \
-  --wandb-project sam3d-metric-scale \
-  --wandb-entity reformed-tulip \
-  --wandb-run-name nocs_sceneholdout_slat_conditioned_1024dim \
-  --metrics-output artifacts/metric_scale/metrics/nocs_sceneholdout_slat_conditioned_1024dim_eval.jsonl \
-  --manifest-output artifacts/metric_scale/manifests/nocs_sceneholdout_slat_conditioned_1024dim_manifest.json \
-  --output artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_1024dim.pt
-```
+See `scripts/train_slat_conditioned_v1.sh` for the runnable script.
 
-Key flags:
-- `--epochs 20`: ~2.2 days at 0.75s/step on A100-80GB
-- `--eval-every 5`: eval at epochs 5, 10, 15, 20 using the pre-baked frozen-SLAT cache
-- `--unfreeze-slat-cross-attn`: unfreezes `cross_attn` + `norm2` in all 24 SLAT blocks (~100M params)
-- `--inject-scale-token-into-slat`: appends scale token to SLAT condition before each denoiser step
-- `--slat-lr 1e-5`: 10× lower LR for SLAT cross-attn to limit drift of DINOv2 conditioning
-- `--eval-feature-cache`: pre-baked frozen-SLAT features used for cheap proxy eval
-- `--stage2-steps 1`: single-step SLAT makes backprop through 24 blocks tractable
+Key differences from the original plan above:
+- `--overfit-samples 0`: full dataset (16,118 samples). Default `--overfit-samples 10` was silently limiting training to 10 samples/epoch.
+- `--stage1-steps 4`: better SS latent quality with minimal memory cost (no_grad).
+- `--stage2-steps 1`: 4-step SLAT backward OOM'd (78/79 GiB); 2-step produced nan in bfloat16. 1 step is stable.
+- `--eval-every 1`: cheap cached eval per epoch.
+- `--load-checkpoint baseline_v2_best.pt`: warm-start from 2.997% MAPE checkpoint.
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`: needed to prevent fragmentation OOM.
+
+---
+
+## Bugs Found and Fixed (2026-04-30 → 2026-05-01)
+
+### 1. Gradient flow blocked (commit 64363e4)
+
+`sample_slat` in `inference_pipeline.py` had `with torch.no_grad():` wrapping the
+entire SLatFlowModel forward. Even with `--unfreeze-slat-cross-attn`, cross-attn
+received zero gradient. Fix: `with_grad: bool = False` param; training passes
+`with_grad=True`.
+
+### 2. MetricScaleHead input-dim mismatch (commit e42d85f)
+
+baseline_v2 checkpoint has `mlp.0.weight` shape [64, 10]. Current model is 13-dim
+(added SS scale features). `strict=False` doesn't handle size mismatches.
+Fix: `_adapt_scale_head_state_dict()` does a smart partial copy — zeroes the 3 new
+ss_scale columns and shifts pointmap columns from positions 8-9 → 11-12.
+
+### 3. bfloat16 attention overflow → nan loss (commit e42d85f)
+
+MetricScaleHead was trained in baseline_v2 with no constraint on output magnitude
+(decoder only needs direction, not scale). Injecting this token raw into SLAT
+cross_attn caused attention logit overflow for most input samples → nan softmax →
+nan loss.
+
+Fix: `F.layer_norm(scale_token, [1024])` applied **only** for SLAT injection. The
+MetricScaleDecoder still receives the unnormalized token, preserving the warm-start.
+This is critical: earlier attempt of adding `output_norm` inside MetricScaleHead
+broke the decoder (87% MAPE after 5 epochs) because the decoder's warm-started
+weights were calibrated for the unnormalized representation.
+
+### 4. No gradient clipping (commit e42d85f)
+
+Neither training path had `clip_grad_norm_`. Added `max_norm=1.0` + nan/inf skip
+guards to both cached and live training loops.
+
+---
+
+## Eval Limitation
+
+`--eval-feature-cache` evaluates against **static** cached SLAT features built with
+the original frozen SLAT weights. The trained cross-attn weights have no effect on
+these numbers — only MetricScaleHead/Decoder improvements are visible.
+
+For a true comparison: after training, run a live heldout eval with `predict_log_dims`
+on heldout images (no cache), using the trained cross-attn. This is the only way to
+measure the full SLAT conditioning benefit.
 
 ---
 

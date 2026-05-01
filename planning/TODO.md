@@ -4,32 +4,31 @@ Goal: make SAM 3D Objects physically accurate by recovering metric scale
 (real-world units), then later address near 1-to-1 geometric fidelity with the
 input object.
 
-Last updated: 2026-04-27
+Last updated: 2026-05-01
 
 ---
 
 ## Current Status
 
-Metric-scale recovery has moved from architecture sketch to a working prototype.
-The frozen SAM3D/MoGe feature cache workflow is implemented, and cached metric
-heads train successfully on OmniNOCS NOCS-Real275.
+SLAT-conditioned metric training is now running on the full 16,118-sample live dataset
+with all known bugs fixed. Baseline frozen-SLAT is solid at 2.997% MAPE.
 
 Best completed runs:
 
 | Run | Split | Train / Held-out | Held-out MAPE | Baseline MAPE | Notes |
 |---|---|---:|---:|---:|---|
-| frozen-SLAT image-grouped | Image-grouped | 2002 / 500 | 2.17% | 12.90% | cm error: W=0.43, H=0.33, D=0.25 |
-| frozen-SLAT scene-heldout 1024-dim | Scene-heldout | 12882 / 3228 | 3.09% | 10.90% | Best at epoch 175; final epoch 200 = 3.23% |
+| frozen-SLAT image-grouped | Image-grouped | 2002 / 500 | 2.17% | 12.90% | W=0.43, H=0.33, D=0.25 cm |
+| frozen-SLAT scene-heldout 768-dim | Scene-heldout | 12882 / 3228 | 3.09% | 10.90% | Best ep175; 768→1024 ckpt incompatible |
+| **nocs_sceneholdout_1024dim_baseline_v2** | Scene-heldout | 12882 / 3228 | **2.997%** | 10.90% | ep200, 13-dim head, modality embed |
 
 Active runs:
 
 | Run | Split | Train / Held-out | Status | Notes |
 |---|---|---:|---|---|
-| SLAT-conditioned 1024-dim | Scene-heldout | 12882 / 3228 | **Running** epoch 1/20 | ~3 days; wandb: nocs_sceneholdout_slat_conditioned_1024dim |
+| **nocs_sceneholdout_slat_conditioned_v1** | Record-train | 16118 / 3228 (cache) | **Running** ep1/10 | Full dataset, SLAT cross-attn unfrozen |
 
-The scene-heldout best checkpoint by held-out mean absolute percentage error is
-epoch 175 at 3.09% MAPE, but only the final epoch-200 checkpoint was saved. Final
-epoch 200 improved median error but worsened mean error.
+Script: `scripts/train_slat_conditioned_v1.sh`
+Wandb: `https://wandb.ai/reformed-tulip/sam3d-metric-scale/runs/v8w4eu5g` (ongoing)
 
 Key finding (2026-04-27): `max(canonical_mesh_bbox) = 1.000 ± 0.002` is a hard
 invariant across all object categories. The mesh scale at inference time is therefore:
@@ -140,8 +139,23 @@ artifacts/metric_scale/metrics/
 
 ### Remaining
 
-- [ ] Compare SLAT-conditioned MAPE vs frozen-SLAT 3.09% baseline after epoch 5 eval.
-- [ ] Ablate: metric token injection without cross-attn unfreeze (pure injection into frozen SLAT).
+- [x] Implemented `collect_slat_cross_attn_params()`, gradient flow, with_grad fix.
+- [x] Fixed gradient flow bug: `sample_slat` had internal `torch.no_grad()` blocking
+      all SLAT cross-attn gradients (commit 64363e4).
+- [x] Added SS scale features (3-dim log-SSI) + `metric_modality_embed` to MetricScaleHead
+      (commit 5777894). Input dim: 10 → 13.
+- [x] Fixed checkpoint shape mismatch (10→13 dim): `_adapt_scale_head_state_dict`
+      (commit e42d85f).
+- [x] Fixed bfloat16 attention overflow: `F.layer_norm` on scale_token before SLAT
+      injection only; decoder receives unnormalized token (commit e42d85f).
+- [x] Added gradient clipping (`clip_grad_norm_ max_norm=1.0`) and nan/inf guards
+      to both training paths (commit e42d85f).
+- [x] Launched full-dataset SLAT-conditioned training (16,118 samples, 10 epochs,
+      eval every epoch). Script: `scripts/train_slat_conditioned_v1.sh`.
+- [ ] **NEXT**: Check epoch 1 eval MAPE (first real signal, ~6-9h from launch).
+- [ ] Compare final MAPE vs baseline_v2's 2.997% after full run.
+- [ ] Run live heldout eval (bypass cache, use trained cross-attn) for true comparison.
+- [ ] Ablate: metric token injection without cross-attn unfreeze (frozen SLAT + injection).
 - [ ] Choose and document the first mesh-supervised dataset for stage-2 fidelity
       experiments.
 
@@ -175,7 +189,7 @@ artifacts/metric_scale/metrics/
 
 ### Remaining
 
-- [ ] Add resume-from-checkpoint support for metric-head training.
+- [x] Add resume-from-checkpoint support for metric-head training (`--resume-from`).
 - [ ] Add a cache metadata validator: script version, dataset roots, split groups,
 - [x] Added cache/artifact manifests with dataset roots, split details, category counts,
       scene counts, feature tensor schema, artifact sizes, and checkpoint hashes.
@@ -214,11 +228,11 @@ artifacts/metric_scale/metrics/
 ## Phase 5 - Productization / Integration
 
 - [x] Decided artifact location for trained metric-head checkpoints outside `/tmp`.
-- [ ] Add documented commands for cache creation, training, evaluation, and inference.
+- [x] Add documented training script: `scripts/train_slat_conditioned_v1.sh`.
+- [ ] Add documented commands for cache creation, evaluation, and inference.
 - [ ] Add a small reproducible smoke-test cache for CI or local sanity checks.
 - [ ] Add `.gitignore` rules or artifact policy for large feature caches and checkpoints.
 - [ ] Decide whether Docker/CI additions should be committed with this work.
-- [ ] Clean up and commit the current training-script changes and planning docs.
 
 ---
 

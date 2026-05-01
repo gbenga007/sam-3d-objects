@@ -174,12 +174,41 @@ backbone — significantly more compute and data than Phase 1.
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| M1 — Datasets downloaded and preprocessed | Not started | |
-| M2 — Architecture implemented, pipeline runs | Not started | |
-| M3 — Scale head overfits on 10 samples | Not started | Sanity check |
-| M4 — Fine-tuning converges, MAPE < 15% on val | Not started | |
+| M1 — Datasets downloaded and preprocessed | **Complete** | NOCS-Real275 via OmniNOCS; Objectron optional/pending |
+| M2 — Architecture implemented, pipeline runs | **Complete** | MetricScaleHead (13-dim), MetricScaleDecoder, SLAT injection |
+| M3 — Scale head overfits on 10 samples | **Complete** | Cached overfit 2.61% MAPE |
+| M4 — Fine-tuning converges, MAPE < 15% on val | **Complete** | baseline_v2: **2.997%** MAPE (ep200, scene-heldout) |
+| M4b — SLAT-conditioned training | **In progress** | slat_conditioned_v1 running; ep1 eval in ~6-9h |
 | M5 — OOD evaluation on WildRGB-D | Not started | |
 | M6 — Phase 2 geometric fidelity begins | Not started | |
+
+---
+
+## Current Active Run (2026-05-01)
+
+**nocs_sceneholdout_slat_conditioned_v1** — SLAT cross-attention conditioned on metric scale token.
+
+| Setting | Value |
+|---|---|
+| Dataset | NOCS-Real275 via OmniNOCS, 16,118 train / 3,228 heldout (cached eval) |
+| Warm-start | baseline_v2_best.pt (2.997% MAPE) |
+| Trainable | MetricScaleHead + MetricScaleDecoder (lr=1e-4) + SLAT cross_attn×24 + norm2×24 (~100M, lr=1e-5) |
+| Stage1 steps | 4 (SS, no_grad) |
+| Stage2 steps | 1 (SLAT, with_grad — memory limit; 2+ steps OOM'd or produced nan) |
+| Epochs | 10, eval every 1 |
+| Estimated time | ~67-90h total; first epoch eval ~6-9h from 2026-05-01 00:00 |
+| Script | `scripts/train_slat_conditioned_v1.sh` |
+| Logs | `/tmp/slat_conditioned_v1.log` |
+| Checkpoint | `artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1*.pt` |
+
+Key bugs fixed before this run:
+
+1. **Gradient flow** (commit 64363e4): `sample_slat` had internal `torch.no_grad()` blocking all cross-attn gradients.
+2. **Checkpoint mismatch** (commit e42d85f): baseline_v2 has 10-dim MetricScaleHead; current is 13-dim. Smart partial load zeroes new ss_scale columns.
+3. **bfloat16 attention overflow** (commit e42d85f): MetricScaleHead output magnitude unconstrained → nan softmax in SLAT cross_attn for most samples. Fix: `F.layer_norm` on scale_token before SLAT injection; decoder receives raw token.
+4. **Gradient clipping** (commit e42d85f): `clip_grad_norm_(max_norm=1.0)` + nan/inf skip guards added.
+
+Eval note: `--eval-feature-cache` uses static cached SLAT features — SLAT conditioning benefit is invisible in these numbers. True comparison requires a live heldout eval after training.
 
 ---
 
