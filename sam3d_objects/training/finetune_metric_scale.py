@@ -220,7 +220,13 @@ def predict_log_dims(
         orig_external_emb = None
         slat_backbone = None
         if inject_scale_token and hasattr(pipeline, "_get_slat_backbone"):
-            token_for_cond = scale_token if unfreeze_cross_attn else scale_token.detach()
+            # Normalize the token for SLAT injection only — the MetricScaleHead output
+            # magnitude is unconstrained (trained for MetricScaleDecoder, not cross-attn).
+            # Layer-normalizing a copy keeps the decoder's warm-start valid while
+            # preventing bfloat16 attention overflow in SLAT cross_attn.
+            import torch.nn.functional as F
+            token_for_cond_base = F.layer_norm(scale_token, [scale_token.shape[-1]])
+            token_for_cond = token_for_cond_base if unfreeze_cross_attn else token_for_cond_base.detach()
             slat_backbone = pipeline._get_slat_backbone()
             if slat_backbone is not None:
                 orig_backbone_emb = slat_backbone.condition_embedder
@@ -911,6 +917,38 @@ def load_feature_cache(path: str) -> tuple[list[dict], list[dict], dict]:
     return train_cache, heldout_cache, cache.get("args", {})
 
 
+def _adapt_scale_head_state_dict(ckpt_sd: dict, head: MetricScaleHead) -> dict:
+    """
+    Handle shape mismatches when loading MetricScaleHead from an older checkpoint.
+    Specifically: if the checkpoint was trained without ss_scale_features (10-dim
+    input) and the current model has ss_scale_features (13-dim input), we insert
+    zero columns for the new ss_scale dims and shift the pointmap columns.
+    Other size mismatches (e.g. ctx_channels change) are skipped via strict=False.
+    """
+    model_sd = head.state_dict()
+    result = {}
+    for key, ckpt_val in ckpt_sd.items():
+        if key not in model_sd:
+            continue
+        model_val = model_sd[key]
+        if ckpt_val.shape == model_val.shape:
+            result[key] = ckpt_val
+        elif key == "mlp.0.weight" and model_val.shape[1] - ckpt_val.shape[1] == head.ss_scale_dim:
+            # ss_scale dims were inserted between pooled and pointmap columns.
+            # ckpt layout: [pooled | log_ps | shift_z]
+            # model layout: [pooled | ss_scale | log_ps | shift_z]
+            new_w = torch.zeros_like(model_val)
+            insert_at = ckpt_val.shape[1] - 2  # pointmap is always last 2 cols
+            new_w[:, :insert_at] = ckpt_val[:, :insert_at]
+            new_w[:, insert_at + head.ss_scale_dim:] = ckpt_val[:, insert_at:]
+            result[key] = new_w
+            print(f"  scale_head: partial load for {key}: "
+                  f"ckpt {ckpt_val.shape} → model {model_val.shape} "
+                  f"(zeroed ss_scale cols {insert_at}:{insert_at + head.ss_scale_dim})")
+        # else: size mismatch we don't know how to handle — skip (strict=False)
+    return result
+
+
 def load_metric_checkpoint(
     path: str,
     scale_head: MetricScaleHead,
@@ -918,9 +956,10 @@ def load_metric_checkpoint(
     slat_backbone=None,
 ) -> dict:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    # strict=False: old checkpoints had ctx_channels=768; the MLP final layer and
-    # the decoder's scale_proj changed to 1024-dim and will be randomly initialised.
-    scale_head.load_state_dict(checkpoint["metric_scale_head"], strict=False)
+    # strict=False: old checkpoints may have ctx_channels=768 or 10-dim input;
+    # _adapt_scale_head_state_dict handles the input-dim expansion case cleanly.
+    adapted_head_sd = _adapt_scale_head_state_dict(checkpoint["metric_scale_head"], scale_head)
+    scale_head.load_state_dict(adapted_head_sd, strict=False)
     scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"], strict=False)
     if slat_backbone is not None and "slat_cross_attn" in checkpoint:
         slat_state = checkpoint["slat_cross_attn"]
@@ -1379,6 +1418,8 @@ def main() -> None:
 
                 loss = torch.stack(losses).mean()
                 loss.backward()
+                all_params = [p for g in optimizer.param_groups for p in g["params"]]
+                torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
                 optimizer.step()
 
                 batch_count = len(losses)
@@ -1486,6 +1527,9 @@ def main() -> None:
                     continue
 
                 loss = torch.stack(losses).mean()
+                if torch.isnan(loss) or torch.isinf(loss):
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
                 loss.backward()
                 if not slat_grad_verified:
                     if not any(p.grad is not None for p in slat_cross_attn_params):
@@ -1496,6 +1540,11 @@ def main() -> None:
                             "to allow gradient flow through cross_attn.to_kv."
                         )
                     slat_grad_verified = True
+                all_params = [p for g in optimizer.param_groups for p in g["params"]]
+                grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+                if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
                 optimizer.step()
 
                 batch_count = len(losses)
