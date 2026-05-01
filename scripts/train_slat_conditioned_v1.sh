@@ -46,7 +46,7 @@ nohup \
   --stage2-steps 1 \
   --batch-size 1 \
   --unfreeze-slat-cross-attn \
-  --load-checkpoint artifacts/metric_scale/checkpoints/nocs_sceneholdout_1024dim_baseline_v2_best.pt \
+  --load-checkpoint artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1_resume.pt \
   --eval-feature-cache /tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt \
   --checkpoint-every 1 \
   --output artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1.pt \

@@ -1497,60 +1497,75 @@ def main() -> None:
         )
 
         slat_grad_verified = not args.unfreeze_slat_cross_attn
+        oom_skipped = 0
 
         for epoch in range(resume_start_epoch, args.epochs):
             running_loss = 0.0
             running_count = 0
             progress = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}")
-            for batch in progress:
+            for step_idx, batch in enumerate(progress):
                 optimizer.zero_grad(set_to_none=True)
                 losses = []
-                for image, metric_dims, mask_pixels in zip(
-                    batch["images"], batch["metric_dims"], batch["mask_pixels"]
-                ):
-                    if int(mask_pixels) < args.min_mask_pixels:
-                        continue
-                    log_pred = predict_log_dims(
-                        pipeline,
-                        scale_head,
-                        scale_decoder,
-                        image,
-                        args.stage1_steps,
-                        args.stage2_steps,
-                        inject_scale_token=args.inject_scale_token_into_slat,
-                        unfreeze_cross_attn=args.unfreeze_slat_cross_attn,
-                    )
-                    log_target = torch.log(metric_dims.to(pipeline.device).clamp(min=1e-6))
-                    losses.append(F.smooth_l1_loss(log_pred[0], log_target))
-
-                if not losses:
-                    continue
-
-                loss = torch.stack(losses).mean()
-                if torch.isnan(loss) or torch.isinf(loss):
-                    optimizer.zero_grad(set_to_none=True)
-                    continue
-                loss.backward()
-                if not slat_grad_verified:
-                    if not any(p.grad is not None for p in slat_cross_attn_params):
-                        raise RuntimeError(
-                            "SLAT cross-attention parameters received no gradient on the "
-                            "first backward pass. This typically means sample_slat is wrapping "
-                            "the generator forward in torch.no_grad() — pass with_grad=True "
-                            "to allow gradient flow through cross_attn.to_kv."
+                try:
+                    for image, metric_dims, mask_pixels in zip(
+                        batch["images"], batch["metric_dims"], batch["mask_pixels"]
+                    ):
+                        if int(mask_pixels) < args.min_mask_pixels:
+                            continue
+                        log_pred = predict_log_dims(
+                            pipeline,
+                            scale_head,
+                            scale_decoder,
+                            image,
+                            args.stage1_steps,
+                            args.stage2_steps,
+                            inject_scale_token=args.inject_scale_token_into_slat,
+                            unfreeze_cross_attn=args.unfreeze_slat_cross_attn,
                         )
-                    slat_grad_verified = True
-                all_params = [p for g in optimizer.param_groups for p in g["params"]]
-                grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
-                if torch.isnan(grad_norm) or torch.isinf(grad_norm):
-                    optimizer.zero_grad(set_to_none=True)
-                    continue
-                optimizer.step()
+                        log_target = torch.log(metric_dims.to(pipeline.device).clamp(min=1e-6))
+                        losses.append(F.smooth_l1_loss(log_pred[0], log_target))
 
-                batch_count = len(losses)
-                running_loss += float(loss.detach().cpu()) * batch_count
-                running_count += batch_count
-                progress.set_postfix(loss=running_loss / max(running_count, 1))
+                    if not losses:
+                        continue
+
+                    loss = torch.stack(losses).mean()
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        optimizer.zero_grad(set_to_none=True)
+                        continue
+                    loss.backward()
+                    if not slat_grad_verified:
+                        if not any(p.grad is not None for p in slat_cross_attn_params):
+                            raise RuntimeError(
+                                "SLAT cross-attention parameters received no gradient on the "
+                                "first backward pass. This typically means sample_slat is wrapping "
+                                "the generator forward in torch.no_grad() — pass with_grad=True "
+                                "to allow gradient flow through cross_attn.to_kv."
+                            )
+                        slat_grad_verified = True
+                    all_params = [p for g in optimizer.param_groups for p in g["params"]]
+                    grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        optimizer.zero_grad(set_to_none=True)
+                        continue
+                    optimizer.step()
+
+                    batch_count = len(losses)
+                    running_loss += float(loss.detach().cpu()) * batch_count
+                    running_count += batch_count
+                    progress.set_postfix(loss=running_loss / max(running_count, 1))
+
+                    if (step_idx + 1) % 500 == 0:
+                        torch.cuda.empty_cache()
+
+                except torch.cuda.OutOfMemoryError:
+                    optimizer.zero_grad(set_to_none=True)
+                    losses = []
+                    torch.cuda.empty_cache()
+                    oom_skipped += 1
+                    print(
+                        f"\n[OOM] epoch {epoch + 1} step {step_idx}: skipped "
+                        f"(total OOM skips={oom_skipped})"
+                    )
 
             epoch_loss = running_loss / max(running_count, 1)
             wandb_payload = {
@@ -1558,6 +1573,7 @@ def main() -> None:
                 "train_epoch/loss": epoch_loss,
                 "train_epoch/examples": running_count,
                 "train_epoch/lr": optimizer.param_groups[0]["lr"],
+                "train_epoch/oom_skipped": oom_skipped,
             }
             if slat_cross_attn_params:
                 wandb_payload["train_epoch/slat_lr"] = optimizer.param_groups[1]["lr"]
