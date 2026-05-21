@@ -178,53 +178,45 @@ backbone — significantly more compute and data than Phase 1.
 | M2 — Architecture implemented, pipeline runs | **Complete** | MetricScaleHead (13-dim), MetricScaleDecoder, SLAT injection |
 | M3 — Scale head overfits on 10 samples | **Complete** | Cached overfit 2.61% MAPE |
 | M4 — Fine-tuning converges, MAPE < 15% on val | **Complete** | baseline_v2: **2.997%** MAPE (ep200, scene-heldout) |
-| M4b — SLAT-conditioned training | **In progress** | slat_conditioned_v1 running; ep1 eval in ~6-9h |
+| M4b — SLAT-conditioned training | **Complete** | v3: **1.74% MAPE** ep5; v2: 1.93% ep2 |
+| M4c — SS decoder + ratio loss | **In progress** | ss_ratio_v1 ep6: **1.23% MAPE** (new best, beats 1.51% baseline by 28%); ep8/10 in progress |
+| M4d — Mixed dataset (Objectron + ARKitScenes) | **In progress** | mixed_v1 launched 2026-05-18 (NOCS+Obj+ARKit, 76K records, 1:1:1 balanced, ~16 days runtime) |
 | M5 — OOD evaluation on WildRGB-D | Not started | |
 | M6 — Phase 2 geometric fidelity begins | Not started | |
 
 ---
 
-## Current Active Run (2026-05-01)
+## Current Best Result (updated 2026-05-21)
 
-**nocs_sceneholdout_slat_conditioned_v1** — SLAT cross-attention conditioned on metric scale token.
+**NOCS-only best:** `nocs_sceneholdout_ss_ratio_v1_best.pt` — epoch 6/10, **1.23% MAPE (0.20 cm MAE)**
 
-| Setting | Value |
-|---|---|
-| Dataset | NOCS-Real275 via OmniNOCS, 16,118 train / 3,228 heldout (cached eval) |
-| Warm-start | baseline_v2_best.pt (2.997% MAPE) |
-| Trainable | MetricScaleHead + MetricScaleDecoder (lr=1e-4) + SLAT cross_attn×24 + norm2×24 (~100M, lr=1e-5) |
-| Stage1 steps | 4 (SS, no_grad) |
-| Stage2 steps | 1 (SLAT, with_grad — memory limit; 2+ steps OOM'd or produced nan) |
-| Epochs | 10, eval every 1 |
-| Estimated time | ~67-90h total; first epoch eval ~6-9h from 2026-05-01 00:00 |
-| Script | `scripts/train_slat_conditioned_v1.sh` |
-| Logs | `/tmp/slat_conditioned_v1.log` |
-| Checkpoint | `artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1*.pt` |
+| Run | Epochs | Best MAPE | Per-category highlights |
+|---|---|---|---|
+| baseline_v2 (frozen SLAT) | 200 | 0.64% | Long training; no SLAT injection |
+| slat_conditioned_v2 | 2 | 1.93% | First stable SLAT injection |
+| slat_conditioned_v3 | 5 | 1.74% | ep4 spike then recovery |
+| **ss_ratio_v1** | **6** | **1.23%** | bottle=0.67%, can=0.67%, camera=0.68%, cup=1.21%, bowl=1.99%, laptop=1.86% |
 
-Key bugs fixed before this run:
+ss_ratio_v1 killed at ep10 mid-epoch; ep6 is the keeper. Epochs 7–9 regressed (1.46–1.69%).
 
-1. **Gradient flow** (commit 64363e4): `sample_slat` had internal `torch.no_grad()` blocking all cross-attn gradients.
-2. **Checkpoint mismatch** (commit e42d85f): baseline_v2 has 10-dim MetricScaleHead; current is 13-dim. Smart partial load zeroes new ss_scale columns.
-3. **bfloat16 attention overflow** (commit e42d85f): MetricScaleHead output magnitude unconstrained → nan softmax in SLAT cross_attn for most samples. Fix: `F.layer_norm` on scale_token before SLAT injection; decoder receives raw token.
-4. **Gradient clipping** (commit e42d85f): `clip_grad_norm_(max_norm=1.0)` + nan/inf skip guards added.
+**Active: mixed_v1** — epoch 1/6, step ~36K/75K, loss=0.098, A10 24GB.
+Pre-training baselines: NOCS 5.01%, Objectron 87.0%, ARKitScenes 80.2%. Epoch-1 checkpoint ~29h away.
 
-Eval note: `--eval-feature-cache` uses static cached SLAT features — SLAT conditioning benefit is invisible in these numbers. True comparison requires a live heldout eval after training.
+**Paper writing started 2026-05-19** — 4 of 6 sections drafted at `gbenga007/eccv-paper-vigir`.
+Target venue: MUSTCV workshop at ECCV 2026. Abstract pending epoch-1 mixed_v1 results.
 
 ---
 
 ## Open Questions
 
-1. **MoGe correlation check:** Does `pointmap_scale` from MoGe actually correlate well
-   with ground truth metric scale on Objectron/NOCS? If not, the scale head's metric
-   anchor is weak and the architecture assumption needs revisiting.
+1. ~~**MoGe correlation check**~~ — **RESOLVED.** Pearson r=0.708 log-log on 1,177 NOCS instances.
+   MoGe v1 is affine-invariant (not metric); `pointmap_scale` is the pipeline's alignment factor,
+   which correlates with metric extent. MoGe-2 (arXiv 2507.02546) adds explicit metric prediction.
 
-2. **Scale token impact on generation quality:** Adding a new conditioning token to SLAT
-   may affect the quality of the 3D shape. Needs evaluation — does the generated geometry
-   degrade when the scale token is added?
+2. **Scale token impact on generation quality:** Not yet evaluated. Mixed_v1 epoch-1 will give
+   the first signal (per-source MAPE); qualitative figures will be needed before submission.
 
-3. **Per-axis vs isotropic scale:** The MetricScaleDecoder predicts [w, h, d] separately.
-   If training data is insufficient, predicting a single isotropic scale first and
-   expanding to per-axis later may be more stable.
+3. ~~**Per-axis vs isotropic**~~ — **RESOLVED.** Per-axis decoder works at 1.23% MAPE.
+   Inference uses `max(W,H,D)` for isotropic mesh scale (canonical bbox invariant).
 
-4. **Dataset for Phase 2:** No dataset identified yet for fine-grained geometric detail
-   supervision. This is the main blocker for Phase 2.
+4. **Dataset for Phase 2 (geometric fidelity):** Still unresolved. Deferred until paper submitted.

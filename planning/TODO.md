@@ -4,49 +4,87 @@ Goal: make SAM 3D Objects physically accurate by recovering metric scale
 (real-world units), then later address near 1-to-1 geometric fidelity with the
 input object.
 
-Last updated: 2026-05-01
+Last updated: 2026-05-12
 
 ---
 
 ## Current Status
 
-SLAT-conditioned metric training is now running on the full 16,118-sample live dataset
-with all known bugs fixed. Baseline frozen-SLAT is solid at 2.997% MAPE.
+Last updated: 2026-05-21
 
-Best completed runs:
+**mixed_v1 training active** — epoch 1/6, step ~36K/75,654 (48%), loss=0.098, 34h in.
+- GPU: A10 24GB (migrated from A100-80GB on 2026-05-19)
+- ETA epoch-1 checkpoint: ~29h from last check
+- Log: `/tmp/mixed_v1.log` (mirrored hourly to `artifacts/metric_scale/logs/mixed_v1.log`)
+- Pre-training baselines: NOCS 5.01%, Objectron 87.0%, ARKitScenes 80.2%, overall 71.4%
+- Loss descending cleanly: 0.977→0.115 (step 25K)→0.102 (step 33K)→0.098 (step 36K)
 
-| Run | Split | Train / Held-out | Held-out MAPE | Baseline MAPE | Notes |
-|---|---|---:|---:|---:|---|
-| frozen-SLAT image-grouped | Image-grouped | 2002 / 500 | 2.17% | 12.90% | W=0.43, H=0.33, D=0.25 cm |
-| frozen-SLAT scene-heldout 768-dim | Scene-heldout | 12882 / 3228 | 3.09% | 10.90% | Best ep175; 768→1024 ckpt incompatible |
-| **nocs_sceneholdout_1024dim_baseline_v2** | Scene-heldout | 12882 / 3228 | **2.997%** | 10.90% | ep200, 13-dim head, modality embed |
+**ss_ratio_v1 COMPLETED** — killed at ep10 mid-epoch (2026-05-18). ep6 = 1.23% MAPE is the final best.
+Best checkpoint: `artifacts/metric_scale/checkpoints/nocs_sceneholdout_ss_ratio_v1_best.pt`
+ep6 per-category: bottle=0.67%, can=0.67%, camera=0.68%, cup=1.21%, bowl=1.99%, laptop=1.86%.
+
+**Paper writing started (2026-05-19)** — Introduction, Related Work, Method, Experiments sections
+drafted and pushed to `git@github.com:gbenga007/eccv-paper-vigir.git`. Abstract pending epoch-1 results.
+Target venue: MUSTCV workshop at ECCV 2026.
+
+Completed runs:
+
+| Run | Split | Train / Held-out | Held-out MAPE | Notes |
+|---|---|---:|---:|---|
+| frozen-SLAT image-grouped | Image-grouped | 2002 / 500 | 2.17% | W=0.43, H=0.33, D=0.25 cm |
+| frozen-SLAT scene-heldout 768-dim | Scene-heldout | 12882 / 3228 | 3.09% | Best ep175 |
+| **nocs_sceneholdout_1024dim_baseline_v2** | Scene-heldout | 12882 / 3228 | **2.997%** | ep200, 13-dim head |
+| nocs_sceneholdout_slat_conditioned_v1 | Record-train | 16054 / 64 | NaN ep1 | Killed; slat-lr=1e-5 too high |
+| **nocs_sceneholdout_slat_conditioned_v2** | Record-train | 16054 / 64 | **1.93%** | ep2 best; ep3 crashed |
+| **nocs_sceneholdout_slat_conditioned_v3** | Record-train | 16054 / 64 | **1.74%** | ep5 best; ep4 transient spike (5.77%) |
 
 Active runs:
 
-| Run | Split | Train / Held-out | Status | Notes |
-|---|---|---:|---|---|
-| **nocs_sceneholdout_slat_conditioned_v1** | Record-train | 16118 / 3228 (cache) | **Running** ep1/10 | Full dataset, SLAT cross-attn unfrozen |
+| Run | Status | Log | Notes |
+|---|---|---|---|
+| **nocs_sceneholdout_ss_ratio_v1** | Killed at ep10 (~34%) 2026-05-18 | `artifacts/metric_scale/logs/ss_ratio_v1.log` | ep6 best=1.23%; ep7-9 regressed to 1.46-1.69%; killed to free Ceph + GPU for mixed_v1 |
+| **mixed_v1** | Launched 2026-05-18 (PID 2833164, third try) | `/tmp/mixed_v1.log` → `artifacts/metric_scale/logs/mixed_v1.log` (hourly cron) | NOCS+Obj+ARKit, 76K records, 1:1:1 balanced; warm-start ss_ratio_v1_best.pt; pipeline-skip handler added; ~16 days |
 
-Script: `scripts/train_slat_conditioned_v1.sh`
-Wandb: `https://wandb.ai/reformed-tulip/sam3d-metric-scale/runs/v8w4eu5g` (ongoing)
+ss_ratio_v1 epoch trajectory:
 
-Key finding (2026-04-27): `max(canonical_mesh_bbox) = 1.000 ± 0.002` is a hard
-invariant across all object categories. The mesh scale at inference time is therefore:
-`s = max(W_pred, H_pred, D_pred)` — no per-axis scaling needed.
-See: `planning/CANONICAL_MESH_BBOX_DIAGNOSTIC_2026-04-27.md`
+| Epoch | MAPE | Mean cm |
+|---|---|---|
+| baseline | 1.51% | 0.22 |
+| 1 | 2.06% | 0.27 |
+| 2 | 1.54% | 0.20 |
+| 3 | 2.02% | 0.26 |
+| 4 | 1.59% | 0.22 |
+| 5 | 1.30% | 0.19 |
+| **6** | **1.23% ← new best** | 0.20 |
+| 7 | 1.46% | 0.21 |
+| 8 | in progress | — |
 
-Artifacts:
+ep6 per-category: bottle=0.67%, can=0.67%, camera=0.68%, cup=1.21%, bowl=1.99%, laptop=1.86%.
+ETA to completion: ~35 hours (~1.5 days from 2026-05-17 02:17).
+
+Log (v3, completed): `/tmp/slat_conditioned_v3.log`
+Wandb: `https://wandb.ai/reformed-tulip/sam3d-metric-scale`
+
+Key findings:
+- `max(canonical_mesh_bbox) = 1.000 ± 0.002`: hard invariant. Isotropic mesh scale = `max(W_pred, H_pred, D_pred)`.
+  See: `planning/CANONICAL_MESH_BBOX_DIAGNOSTIC_2026-04-27.md`
+- Mesh aspect ratio (H, D) comes from SLAT reconstruction, not the metric head — this is the
+  next problem to address (depth reprojection loss). See: `/mnt/source/.claude/memory/project_aspect_ratio.md`
+- OmniNOCS train/test metadata files are identical — true held-out eval requires
+  `--heldout-samples 64 --split-group record`.
+
+Durable artifacts:
 
 ```text
-/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_cache.pt
-/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500_metrics.jsonl
-/tmp/metric_scale_omninocs_imagegroup_train2000_holdout500.pt
-
-/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt   ← eval cache for SLAT run
-/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_metrics.jsonl
-/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6.pt
-
-artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_1024dim.pt  ← in progress
+artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v3_best.pt  ← v3 best (1.74%)
+artifacts/metric_scale/checkpoints/nocs_sceneholdout_ss_ratio_v1_best.pt          ← current best (1.30%, ep5)
+artifacts/metric_scale/checkpoints/nocs_sceneholdout_ss_ratio_v1.pt               ← rolling resume ckpt
+artifacts/metric_scale/metrics/
+artifacts/metric_scale/manifests/
+artifacts/metric_scale/logs/ss_ratio_v1.log          ← training log (backed up every 5min from /tmp)
+artifacts/metric_scale/eval_slat_conditioned_v2/     ← 64-sample eval, isotropic scaling, 3.0% mean MAPE
+artifacts/metric_scale/eval_v2_peraxis/              ← 64-sample eval, per-axis scaling
+artifacts/metric_scale/eval_v3_mesh_bbox/            ← v3_best: iso 11.42%, peraxis 5.54%, gap 5.88pp; 192 PLYs
 ```
 
 Planning docs:
@@ -57,7 +95,23 @@ planning/MIXED_OMNINOCS_TRAINING_STATUS_2026-04-22.md
 planning/SLAT_CONDITIONED_METRIC_TRAINING_2026-04-27.md      ← architecture + training command
 planning/CANONICAL_MESH_BBOX_DIAGNOSTIC_2026-04-27.md        ← bbox invariant finding
 planning/METRIC_TOKEN_STAGE2_MESH_PLAN_2026-04-23.md
+planning/ANISOTROPIC_RESCALE_EXPERIMENT_2026-05-11.md        ← confirms SS is source of aspect ratio error
+planning/SS_ARCHITECTURE_AND_ASPECT_RATIO_FIX_2026-05-11.md  ← SS architecture + ratio loss design + impl
+planning/PAPER_PLAN_METRIC_SCALE_2026-05-17.md               ← Paper framing, experiments, ablations, baselines
 ```
+
+Aspect ratio eval tool (run on GPU when not training):
+
+```bash
+python scripts/mesh_scale_eval.py \
+  --checkpoint artifacts/metric_scale/checkpoints/<ckpt>.pt \
+  --n-samples 64 --stage1-steps 4 --stage2-steps 1 \
+  --output artifacts/metric_scale/eval_<run>/mesh_scale_eval.jsonl \
+  --output-dir artifacts/metric_scale/eval_<run>/plys
+```
+
+Compares isotropic vs per-axis mesh bbox errors vs GT. Gap = cost of wrong voxel aspect ratio.
+Saves 3 PLYs per sample (canonical/iso/peraxis). v3_best baseline: iso 11.42%, peraxis 5.54%, gap +5.88pp.
 
 Durable reproducibility artifacts:
 
@@ -90,13 +144,51 @@ artifacts/metric_scale/metrics/
 
 - [ ] Confirm whether ARKitScenes and Hypersim OmniNOCS extraction finished cleanly.
 - [ ] Locate or download source RGB roots for Objectron, ARKitScenes, and Hypersim.
-- [ ] Decide whether to include Objectron in the next training phase or keep the current
-      NOCS-first path until inference integration is complete.
-- [ ] If using Objectron, download source RGB and adapt `scripts/preprocess_objectron.py`
-      to the OmniNOCS annotation layout.
+- [x] **Phase 3a**: Mixed dataset training — NOCS + Objectron + ARKitScenes
+      - Warm-start from ss_ratio_v1_best.pt (1.23% MAPE, ep6) ✓
+      - Sampling: Option C — `--max-records-per-source 30000 --balanced-sampling` ✓
+      - Per-source heldout: 64 NOCS + 200 Objectron + 200 ARKitScenes ✓
+      - 6 epochs, ~63h/epoch → ~16 days total
+      - **Launched 2026-05-18** as `mixed_v1` (PID 2815224, log `artifacts/metric_scale/logs/mixed_v1.log`)
+- [x] Add `--balanced-sampling` flag (WeightedRandomSampler, weight=1/source_count) to `finetune_metric_scale.py`
+- [x] Add `--heldout-per-source` flag + per-source heldout in `make_train_eval_subsets`
+- [x] Resolve Objectron RGB density: wrote `scripts/download_objectron_selective.py`, streamed
+      96,728 train + 26,846 test frames from `gs://objectron/videos/.../video.MOV` via PyAV
+- [x] Write `scripts/train_mixed_v1.sh` launcher
+- [ ] Monitor mixed_v1 epoch evals; checkpoint best per-source MAPE
+- [ ] **Phase 3b** (follow-up, decide after mixed_v1 finishes): Add Hypersim at 0.25× weight if
+      broader category coverage needed. Risk: synthetic domain gap in MoGe/DINOv2 features.
+- [x] Enable flash_attn backend — switched in `scripts/train_mixed_v1.sh` (2026-05-20);
+      verified fp32 cross-attn upcast is independent of ATTN_BACKEND (it wraps forward(), not sdpa)
 - [ ] Add a durable dataset/cache manifest so `/tmp` artifacts can be reproduced or moved
       without relying only on notes.
 - [ ] Add optional transparent-object preprocessing experiment for bottle/cup using masks.
+
+---
+
+## Phase 7 - Paper (MUSTCV @ ECCV 2026)
+
+Repo: `git@github.com:gbenga007/eccv-paper-vigir.git`
+
+### Completed
+- [x] Identify venue: MUSTCV workshop at ECCV 2026
+- [x] Draft Introduction (5 paragraphs + contributions)
+- [x] Draft Related Work (4 paragraphs; all key bib entries filled)
+- [x] Draft Method (6 subsections with equations)
+- [x] Draft Experiments skeleton (tables with real NOCS numbers; placeholders for mixed results)
+
+### Pending (in priority order)
+- [ ] Fill abstract — waiting for epoch-1 mixed_v1 per-source MAPE (~29h)
+- [ ] Compute category-mean prior per-category MAPE (no training; just dataset stats)
+- [ ] Implement depth-bridge baseline (MoGe-2 → masked pointcloud bbox; inference only)
+- [ ] Run ablation training runs (3–4 × ~60h each):
+      A1: w/o SS scale features; A2: w/o pointmap stats; A4: w/o AR loss; A5: w/o CFG dropout
+- [ ] Architecture diagram (frozen backbone greyed out; new components highlighted)
+- [ ] Qualitative figure (input / GT / category-mean / ours — 4 instances)
+- [ ] Scatter plot: predicted vs GT object size, coloured by source
+- [ ] Mesh aspect-ratio eval: rerun `scripts/mesh_scale_eval.py` on ss_ratio_v1_best.pt
+- [ ] Draft Conclusion
+- [ ] WildRGB-D OOD evaluation (stretch; needed for main-conference level)
 
 ---
 
@@ -152,12 +244,27 @@ artifacts/metric_scale/metrics/
       to both training paths (commit e42d85f).
 - [x] Launched full-dataset SLAT-conditioned training (16,118 samples, 10 epochs,
       eval every epoch). Script: `scripts/train_slat_conditioned_v1.sh`.
-- [ ] **NEXT**: Check epoch 1 eval MAPE (first real signal, ~6-9h from launch).
-- [ ] Compare final MAPE vs baseline_v2's 2.997% after full run.
-- [ ] Run live heldout eval (bypass cache, use trained cross-attn) for true comparison.
+- [x] Check epoch 1 eval MAPE — v2 ep1: 2.23%, ep2: 1.93% (beats baseline_v2's 2.997%).
+- [x] Compare final MAPE vs baseline_v2: v2 best is 1.93% vs 2.997% — improvement confirmed.
+- [x] Run live heldout eval with trained cross-attn (64-sample, record-group held-out).
 - [ ] Ablate: metric token injection without cross-attn unfreeze (frozen SLAT + injection).
+- [ ] Address mesh aspect ratio: confirmed Stage 1 voxel topology is the source.
+      Fix (v1, implemented 2026-05-11): soft-variance aspect ratio loss on SS decoder output.
+        - `compute_ss_aspect_ratio_loss`: rank-sorted log-normalised GT dims vs soft voxel std-dev
+        - `--ss-ratio-loss-weight` (default 0.0), `--unfreeze-ss-decoder`
+        - Decoder-only: SS backbone frozen; SS decoder gets second forward on detached shape_latent
+        - Training target: GT [W,H,D] sorted descending, log-normalised to zero mean (scale-free)
+      Fix (v2, future): `--unfreeze-ss-cross-attn` — propagate loss through backbone cross-attn
+        to PointPatchEmbed (requires modifying sample_sparse_structure with_grad support).
+      Overfit test (done): gradient flow confirmed, loss 0.0015→0.000481 over 5 epochs.
+      Full training run launched: ss_ratio_v1 (epoch 1/10 active).
+      Baseline mesh bbox eval (v3_best): iso 11.42%, peraxis 5.54%, gap +5.88pp.
+        - laptop worst at iso (19.12%→5.92%), smallest axis worst (18%→6.6%)
+        - can anomalous: per-axis WORSE than iso (9.33% vs 7.89%)
+      Next: re-run mesh_scale_eval on ss_ratio_v1_best.pt after epoch 1 to measure gap reduction.
+      Architecture + loss design: `planning/SS_ARCHITECTURE_AND_ASPECT_RATIO_FIX_2026-05-11.md`
 - [ ] Choose and document the first mesh-supervised dataset for stage-2 fidelity
-      experiments.
+      experiments (Hypersim metric meshes are a leading candidate).
 
 ---
 
@@ -265,6 +372,9 @@ planning/METRIC_TOKEN_STAGE2_MESH_PLAN_2026-04-23.md
 | M1 | Mostly complete | NOCS/OmniNOCS path is usable; Objectron remains optional/pending |
 | M2 | Prototype complete | Metric heads and cached training path run end-to-end |
 | M3 | Complete | 10-sample cached overfit reached 2.61% MAPE |
-| M4 | Prototype complete | Scene-heldout best is 3.09% MAPE, well below 15% target |
+| M4 | Complete | Scene-heldout best is 3.09% MAPE; SLAT-conditioned v2 best is 1.93% MAPE |
+| M4b | **Complete** | v3: **1.74% MAPE** ep5; aspect ratio problem identified as next step |
+| M4c | **In progress** | ss_ratio_v1 ep6: **1.23% MAPE** (new best); ep8/10 in progress |
+| M4d | **In progress** | Phase 3a mixed training (mixed_v1 launched 2026-05-18): NOCS+Obj+ARKit, 1:1:1 balanced, ~16 days |
 | M5 | Not started | OOD evaluation still pending |
-| M6 | Not started | Geometric fidelity work remains future phase |
+| M6 | Not started | Geometric fidelity / aspect ratio work — depth reprojection loss next |
