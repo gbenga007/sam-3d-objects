@@ -1,0 +1,115 @@
+apiVersion: batch/v1
+kind: Job
+metadata: 
+  name: ${job_name}
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A10
+                - NVIDIA-A6000
+                - NVIDIA-GeForce-RTX-3090
+      volumes:
+      - name: data
+        emptyDir: {}
+      - name: source
+        persistentVolumeClaim:
+          claimName: gbenga-vol-2tb
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      containers:
+      - name: gpu-container
+        image: gitlab-registry.nrp-nautilus.io/goowfd/sam3d-objects:sam3d-cu121-torch2.4.1-core
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -euo pipefail
+            cd /mnt/source/sam-3d-objects
+
+            # Install deps not in the baked image
+            pip install --no-cache-dir accelerate
+
+            # Ensure the package points to the PVC copy so local edits take effect
+            pip install -e . --no-deps
+
+            # Environment
+            export LIDRA_SKIP_INIT=1
+            export ATTN_BACKEND=flash_attn
+            export SPARSE_ATTN_BACKEND=flash_attn
+            export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            export TOKENIZERS_PARALLELISM=false
+            export WANDB_API_KEY=${wandb_api_key}
+
+            # Launch DDP training via HuggingFace Accelerate.
+            # num_processes must match nvidia.com/gpu in the resources block.
+            # FROM-SCRATCH recipe (cluster equivalent of train_mixed_scratch.sh):
+            # SS decoder stays FROZEN and there is no warm-start, so the saved
+            # checkpoint is inference-valid by construction. Do NOT re-add
+            # --unfreeze-ss-decoder / --ss-ratio-loss-weight / --load-checkpoint:
+            # they caused the mixed_v1 pipeline-skip cascade and unsaved-weights bug.
+            accelerate launch \
+              --num_processes ${num_gpus} \
+              --mixed_precision bf16 \
+              --dynamo_backend no \
+              sam3d_objects/training/finetune_metric_scale_multi_gpu.py \
+              --config checkpoints/hf/pipeline.yaml \
+              --dataset omninocs-mixed \
+              --omninocs-sources nocs_real275 objectron arkitscenes \
+              --omninocs-root /mnt/source/datasets_sam3d/OmniNOCS \
+              --rgb-root /mnt/source/datasets_sam3d/OmniNOCS/real_test \
+              --objectron-rgb-root /mnt/source/datasets_sam3d/OmniNOCS \
+              --arkitscenes-rgb-root /mnt/source/datasets_sam3d/OmniNOCS \
+              --skip-missing-rgb \
+              --max-records-per-source ${max_records} \
+              --balanced-sampling \
+              --heldout-per-source nocs_real275:64,objectron:200,arkitscenes:200 \
+              --overfit-samples 0 \
+              --seed 0 \
+              --epochs ${epochs} \
+              --eval-every 1 \
+              --lr ${lr} \
+              --slat-lr ${slat_lr} \
+              --slat-lr-warmup-steps 1500 \
+              --weight-decay 1e-4 \
+              --stage1-steps 4 \
+              --stage2-steps 1 \
+              --batch-size 1 \
+              --unfreeze-slat-cross-attn \
+              --p-uncond-scale-token 0.1 \
+              --log-step-every 10 \
+              --checkpoint-every 1 \
+              --output artifacts/metric_scale/checkpoints/${run_name}.pt \
+              --best-output artifacts/metric_scale/checkpoints/${run_name}_best.pt \
+              --metrics-output artifacts/metric_scale/metrics/${run_name}_eval.jsonl \
+              --manifest-output artifacts/metric_scale/manifests/${run_name}_manifest.json \
+              --wandb \
+              --wandb-entity reformed-tulip \
+              --wandb-project sam3d-metric-scale \
+              --wandb-run-name ${run_name}
+        resources:
+          limits:
+            memory: ${memory_gi}Gi
+            cpu: ${cpu_cores}
+            nvidia.com/gpu: ${num_gpus}
+            ephemeral-storage: "${ephemeral_gi}G"
+          requests:
+            memory: ${memory_gi}Gi
+            cpu: ${cpu_cores}
+            nvidia.com/gpu: ${num_gpus}
+            ephemeral-storage: "${ephemeral_gi}G"
+        volumeMounts:
+        - name: data
+          mountPath: /mnt/dest
+        - name: source
+          mountPath: /mnt/source
+        - name: dshm
+          mountPath: /dev/shm
+      restartPolicy: Never
