@@ -28,9 +28,11 @@ from pathlib import Path
 os.environ.setdefault("LIDRA_SKIP_INIT", "1")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from tqdm import tqdm
 
 from sam3d_objects.data.dataset.metric import OmniNOCSObjectDataset, OmniNOCSReal275Dataset
@@ -40,6 +42,46 @@ from sam3d_objects.model.backbone.scale_head import (
     _ScaleAugmentedEmbedderProxy,
     extract_ss_scale_features,
 )
+
+
+class AdaptiveGradClipper:
+    """Tracks a rolling buffer of gradient norms and clips at the 95th percentile.
+
+    Matches the approach in TRELLIS (grad_clip_utils.py). Uses a hard cap of
+    max_norm until the buffer fills (buffer_size steps), then self-calibrates.
+    Non-finite norms are passed through clip_grad_norm_ unchanged and do not
+    update the buffer, so the caller's NaN guard remains responsible for skipping
+    the optimizer step on bad gradients.
+    """
+
+    def __init__(self, max_norm: float = 1.0, clip_percentile: float = 95.0, buffer_size: int = 1000):
+        self.max_norm = max_norm
+        self._max_norm = max_norm
+        self.clip_percentile = clip_percentile
+        self.buffer_size = buffer_size
+        self._grad_norms = np.zeros(buffer_size, dtype=np.float32)
+        self._ptr = 0
+        self._full = False
+
+    def __call__(self, parameters) -> torch.Tensor:
+        grad_norm = torch.nn.utils.clip_grad_norm_(parameters, max_norm=self._max_norm)
+        if torch.isfinite(grad_norm):
+            self._grad_norms[self._ptr] = float(grad_norm)
+            self._ptr = (self._ptr + 1) % self.buffer_size
+            if self._ptr == 0:
+                self._full = True
+            if self._full:
+                self._max_norm = min(
+                    float(np.percentile(self._grad_norms, self.clip_percentile)),
+                    self.max_norm,
+                )
+        return grad_norm
+
+    def log(self) -> dict:
+        return {
+            "max_norm": float(self._max_norm),
+            "buffer_filled": bool(self._full),
+        }
 
 
 class DeviceOnlyPipeline:
@@ -58,7 +100,158 @@ def collate_instances(batch: list[dict]) -> dict:
         "mask_pixels": torch.tensor(
             [item["mask_pixels"] for item in batch], dtype=torch.long
         ),
+        "image_names": [item["image_name"] for item in batch],
     }
+
+
+class Moge2PointmapStore:
+    """
+    Lookup of precomputed MoGe-2 global metric pointmaps keyed by image_name
+    (scripts/precompute_moge2_pointmaps.py output: float16 [H,W,3] npy in
+    PyTorch3D convention, NaN outside the MoGe-2 valid mask, plus manifest.json).
+
+    A missing frame raises KeyError: silently falling back to live MoGe-v1 would
+    mix non-metric anchors into a metric-anchor run.
+    """
+
+    def __init__(self, pointmap_dir: str):
+        self.dir = Path(pointmap_dir)
+        manifest_path = self.dir / "manifest.json"
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        self.frames: dict[str, str] = manifest["frames"]
+        if not self.frames:
+            raise ValueError(f"Empty MoGe-2 pointmap manifest: {manifest_path}")
+        print(
+            f"MoGe-2 pointmap store: {len(self.frames)} frames from {self.dir} "
+            f"(model={manifest.get('model')})"
+        )
+
+    def lookup(self, image_name: str) -> torch.Tensor:
+        try:
+            fname = self.frames[image_name]
+        except KeyError:
+            raise KeyError(
+                f"No precomputed MoGe-2 pointmap for image_name={image_name!r} in "
+                f"{self.dir}/manifest.json — rerun scripts/precompute_moge2_pointmaps.py"
+            ) from None
+        pm = np.load(self.dir / fname)
+        return torch.from_numpy(pm.astype(np.float32))
+
+
+ANCHOR_FEAT_DIM = 7  # log_anchor_iso (1) + log_pose_scale (3) + voxel_extent (3)
+
+
+def load_anchor_tables(paths: str) -> dict:
+    """
+    uid -> anchor features from pose_scale_heldout_compare.py jsonl output
+    (pose-decoder scale + canonical voxel extents under the live MoGe-2 pointmap,
+    SS 25 steps = deployment condition). Comma-separated paths (train + heldout).
+    """
+    anchors: dict = {}
+    for path in paths.split(","):
+        path = path.strip()
+        n = 0
+        with open(path) as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # partial trailing line while the extraction is appending
+                ps = torch.tensor(r["scale"], dtype=torch.float32).clamp(min=1e-6)
+                ext = torch.tensor(r["voxel_extent"], dtype=torch.float32)
+                anchors[r["uid"]] = torch.cat(
+                    [
+                        torch.log(torch.tensor([max(r["pred_iso"], 1e-6)])),
+                        torch.log(ps),
+                        ext,
+                    ]
+                )  # [7]
+                n += 1
+        print(f"anchor table {path}: {n} records")
+    return anchors
+
+
+def anchor_feats_for(features: dict, anchors: dict, device) -> torch.Tensor:
+    return anchors[features["uid"]].to(device).unsqueeze(0)  # [1, 7]
+
+
+class AnchorAugmentedDecoder(nn.Module):
+    """
+    v1a: same absolute log-WHD regression as MetricScaleDecoder, but with the
+    pose-decoder anchor features appended to the MLP input. Trained with the
+    standard log loss plus an auxiliary iso-scale loss (shared gradients).
+    """
+
+    def __init__(self, slat_feat_dim: int = 8, scale_token_dim: int = 1024,
+                 scale_proj_dim: int = 16, hidden_dim: int = 128):
+        super().__init__()
+        self.scale_proj = nn.Linear(scale_token_dim, scale_proj_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(slat_feat_dim + scale_proj_dim + ANCHOR_FEAT_DIM, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 3),
+        )
+
+    @staticmethod
+    def _pool(slat_feats, batch_indices, batch_size, dtype):
+        pooled = torch.zeros(batch_size, slat_feats.shape[1], device=slat_feats.device, dtype=dtype)
+        counts = torch.zeros(batch_size, 1, device=slat_feats.device, dtype=dtype)
+        idx = batch_indices.long().view(-1, 1).expand(-1, slat_feats.shape[1])
+        pooled.scatter_add_(0, idx, slat_feats.to(dtype))
+        counts.scatter_add_(0, batch_indices.long().view(-1, 1),
+                            torch.ones(batch_indices.shape[0], 1, device=slat_feats.device, dtype=dtype))
+        return pooled / counts.clamp(min=1)
+
+    def forward(self, slat_feats, scale_token, batch_indices, anchor_feats):
+        dtype = next(self.parameters()).dtype
+        pooled = self._pool(slat_feats, batch_indices, scale_token.shape[0], dtype)
+        scale_ctx = self.scale_proj(scale_token.squeeze(1).to(dtype))
+        x = torch.cat([pooled, scale_ctx, anchor_feats.to(dtype)], dim=1)
+        return self.mlp(x)  # [batch, 3] log(W,H,D)
+
+
+class FactoredScaleDecoder(nn.Module):
+    """
+    v1b: MoGe-2-style decoupled prediction (Mogev2.pdf §3.2). Two MLPs on the
+    same input: an iso branch predicting a log correction to the pose-decoder
+    anchor iso, and a proportions branch predicting max-pinned log proportions.
+    log_WHD = (log_anchor_iso + corr) + (log_props − max(log_props)), so
+    max(log_WHD) == log_iso exactly: an iso loss on max(pred) reaches only the
+    iso branch, a loss on max-pinned log dims reaches only the proportions
+    branch — no gradient crosstalk by construction.
+    """
+
+    def __init__(self, slat_feat_dim: int = 8, scale_token_dim: int = 1024,
+                 scale_proj_dim: int = 16, hidden_dim: int = 128):
+        super().__init__()
+        self.scale_proj = nn.Linear(scale_token_dim, scale_proj_dim)
+        in_dim = slat_feat_dim + scale_proj_dim + ANCHOR_FEAT_DIM
+
+        def mlp(out_dim):
+            return nn.Sequential(
+                nn.Linear(in_dim, hidden_dim), nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim // 2), nn.SiLU(),
+                nn.Linear(hidden_dim // 2, out_dim),
+            )
+
+        self.iso_mlp = mlp(1)
+        self.prop_mlp = mlp(3)
+
+    def forward(self, slat_feats, scale_token, batch_indices, anchor_feats):
+        dtype = next(self.parameters()).dtype
+        pooled = AnchorAugmentedDecoder._pool(slat_feats, batch_indices, scale_token.shape[0], dtype)
+        scale_ctx = self.scale_proj(scale_token.squeeze(1).to(dtype))
+        anchor_feats = anchor_feats.to(dtype)
+        x = torch.cat([pooled, scale_ctx, anchor_feats], dim=1)
+        log_iso = anchor_feats[:, 0:1] + self.iso_mlp(x)        # residual to anchor iso
+        log_props = self.prop_mlp(x)
+        pinned = log_props - log_props.max(dim=1, keepdim=True).values  # ≤ 0, max = 0
+        return log_iso + pinned  # [batch, 3] log(W,H,D); max(out) == log_iso
 
 
 def freeze_pipeline(pipeline) -> None:
@@ -70,10 +263,64 @@ def freeze_pipeline(pipeline) -> None:
             param.requires_grad_(False)
 
 
-def collect_slat_cross_attn_params(pipeline) -> tuple[list, object]:
+def _upcast_module_to_fp32_with_shims(module) -> None:
+    """
+    Convert an nn.Module's params/buffers to fp32, and wrap forward to cast
+    floating-point tensor inputs to fp32 and outputs back to the input dtype.
+
+    Used to run SLAT cross-attention in fp32 while the rest of SLAT stays in
+    bf16/fp16. The bf16 attention backward through cross_attn.to_kv overflowed
+    in nocs_sceneholdout_slat_conditioned_v1 and corrupted 144/192 cross_attn
+    weight tensors to NaN after the very first optimizer step. fp32 math here
+    prevents that overflow; the per-block memory cost is small (~17M params *
+    4B = ~70MB extra) and only the cross-attn portion runs in fp32.
+    """
+    module.float()
+    orig_forward = module.forward
+
+    def fp32_forward(*args, **kwargs):
+        in_dtype = None
+        new_args = []
+        for a in args:
+            if torch.is_tensor(a) and a.is_floating_point():
+                if in_dtype is None:
+                    in_dtype = a.dtype
+                new_args.append(a.float())
+            else:
+                new_args.append(a)
+        new_kwargs = {}
+        for k, v in kwargs.items():
+            if torch.is_tensor(v) and v.is_floating_point():
+                if in_dtype is None:
+                    in_dtype = v.dtype
+                new_kwargs[k] = v.float()
+            else:
+                new_kwargs[k] = v
+        out = orig_forward(*new_args, **new_kwargs)
+        if in_dtype is None or in_dtype == torch.float32:
+            return out
+        if torch.is_tensor(out) and out.is_floating_point():
+            return out.to(in_dtype)
+        if isinstance(out, tuple):
+            return tuple(
+                o.to(in_dtype) if torch.is_tensor(o) and o.is_floating_point() else o
+                for o in out
+            )
+        return out
+
+    module.forward = fp32_forward
+
+
+def collect_slat_cross_attn_params(pipeline, upcast_fp32: bool = True) -> tuple[list, object]:
     """
     Selectively unfreeze the cross-attention layers (cross_attn + norm2) in
     every SLatFlowModel transformer block after freeze_pipeline has run.
+
+    When upcast_fp32 is True, cross_attn and norm2 are converted to fp32 with
+    input/output dtype shims so the cross-attention math runs in fp32 while
+    the rest of SLAT stays in bf16/fp16. This prevents the bf16 backward
+    overflow that NaN-corrupted SLAT cross-attn weights after step 1 of
+    nocs_sceneholdout_slat_conditioned_v1.
 
     Returns (unfrozen_param_list, slat_backbone).  The backbone reference is
     needed to save its state dict in the checkpoint.
@@ -88,6 +335,9 @@ def collect_slat_cross_attn_params(pipeline) -> tuple[list, object]:
 
     unfrozen: list = []
     for block in backbone.blocks:
+        if upcast_fp32:
+            _upcast_module_to_fp32_with_shims(block.cross_attn)
+            _upcast_module_to_fp32_with_shims(block.norm2)
         for p in block.cross_attn.parameters():
             p.requires_grad_(True)
             unfrozen.append(p)
@@ -99,11 +349,87 @@ def collect_slat_cross_attn_params(pipeline) -> tuple[list, object]:
 
     n_blocks = len(backbone.blocks)
     n_params = sum(p.numel() for p in unfrozen)
+    dtype_note = " (cross_attn+norm2 upcast to fp32)" if upcast_fp32 else ""
     print(
         f"Unfrozen SLAT cross-attn in {n_blocks} blocks "
-        f"({n_params:,} params across cross_attn + norm2)"
+        f"({n_params:,} params across cross_attn + norm2){dtype_note}"
     )
     return unfrozen, backbone
+
+
+def collect_ss_decoder_params(pipeline) -> list:
+    """
+    Unfreeze the SS decoder so it can receive gradients from the aspect ratio loss.
+
+    Returns the unfrozen param list for the optimizer.  The backbone stays frozen;
+    only the convolutional decoder (16^3 → 64^3) learns to map shape latents to
+    more proportionally accurate occupancy volumes.
+    """
+    if "ss_decoder" not in pipeline.models:
+        raise RuntimeError("Cannot locate ss_decoder in pipeline.models.")
+    ss_decoder = pipeline.models["ss_decoder"]
+    unfrozen: list = []
+    for p in ss_decoder.parameters():
+        p.requires_grad_(True)
+        unfrozen.append(p)
+    ss_decoder.train()
+    n_params = sum(p.numel() for p in unfrozen)
+    print(f"Unfrozen SS decoder ({n_params:,} params)")
+    return unfrozen
+
+
+def compute_ss_aspect_ratio_loss(
+    ss_logits: torch.Tensor,
+    gt_dims: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Scale-invariant aspect ratio loss between SS soft occupancy and GT metric dims.
+
+    Uses soft marginal variance along each voxel axis as a differentiable proxy
+    for bounding-box extent.  Rank-sorted descending comparison handles axis
+    permutation ambiguity (no fixed mapping between voxel axes and GT W/H/D).
+
+    ss_logits: [B, 1, 64, 64, 64]  — pre-threshold logits from the SS decoder
+    gt_dims:   [B, 3]               — GT metric dims [W, H, D] in metres
+    Returns:   scalar smooth-L1 loss on normalised log aspect ratios
+    """
+    probs = torch.sigmoid(ss_logits).squeeze(1)  # [B, VD, VH, VW]
+    B, VD, VH, VW = probs.shape
+    device, dtype = probs.device, probs.dtype
+    eps = 1e-6
+
+    d_idx = torch.arange(VD, device=device, dtype=dtype)
+    h_idx = torch.arange(VH, device=device, dtype=dtype)
+    w_idx = torch.arange(VW, device=device, dtype=dtype)
+
+    p_d = probs.sum(dim=[2, 3])  # [B, VD]
+    p_h = probs.sum(dim=[1, 3])  # [B, VH]
+    p_w = probs.sum(dim=[1, 2])  # [B, VW]
+
+    norm_d = p_d.sum(1, keepdim=True) + eps
+    norm_h = p_h.sum(1, keepdim=True) + eps
+    norm_w = p_w.sum(1, keepdim=True) + eps
+
+    mean_d = (p_d * d_idx).sum(1, keepdim=True) / norm_d
+    mean_h = (p_h * h_idx).sum(1, keepdim=True) / norm_h
+    mean_w = (p_w * w_idx).sum(1, keepdim=True) / norm_w
+
+    var_d = (p_d * (d_idx - mean_d) ** 2).sum(1) / norm_d.squeeze(1)
+    var_h = (p_h * (h_idx - mean_h) ** 2).sum(1) / norm_h.squeeze(1)
+    var_w = (p_w * (w_idx - mean_w) ** 2).sum(1) / norm_w.squeeze(1)
+
+    # Per-axis std-dev in voxels [B, 3], rank-sorted descending
+    log_ext = torch.stack([var_w.sqrt(), var_h.sqrt(), var_d.sqrt()], dim=1).clamp(min=eps).log()
+    log_ext_sorted, _ = log_ext.sort(dim=1, descending=True)
+
+    log_gt = torch.log(gt_dims.to(device=device, dtype=dtype).clamp(min=eps))
+    log_gt_sorted, _ = log_gt.sort(dim=1, descending=True)
+
+    # Normalise to remove global scale — aspect ratio comparison only
+    log_ext_norm = log_ext_sorted - log_ext_sorted.mean(dim=1, keepdim=True)
+    log_gt_norm = log_gt_sorted - log_gt_sorted.mean(dim=1, keepdim=True)
+
+    return F.smooth_l1_loss(log_ext_norm, log_gt_norm)
 
 
 def load_pipeline(config_path: str, device: str, compile_model: bool = False):
@@ -172,9 +498,18 @@ def predict_log_dims(
     stage2_steps: int | None,
     inject_scale_token: bool = False,
     unfreeze_cross_attn: bool = False,
-) -> torch.Tensor:
+    p_uncond_scale_token: float = 0.0,
+    ss_ratio_loss_weight: float = 0.0,
+    gt_dims: torch.Tensor | None = None,
+    pointmap: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, bool, torch.Tensor]:
     """
     Run the full SAM3D pipeline and return predicted log-dimensions.
+
+    pointmap: optional precomputed global pointmap [H,W,3] (e.g. MoGe-2 metric,
+        PyTorch3D convention) passed through to compute_pointmap in place of the
+        live MoGe-v1 call — makes both the SS conditioning and pointmap_scale/shift
+        metric.
 
     inject_scale_token: append the scale token to SLAT conditioning before
         each denoiser step.
@@ -184,9 +519,22 @@ def predict_log_dims(
         scale token and MetricScaleHead.  scale_token and slat.feats are not
         detached.  Requires inject_scale_token=True and --stage2-steps 1 to
         keep the backward graph tractable.
+
+    p_uncond_scale_token: with this probability, zero the SLAT-injected scale
+        token (CFG-style dropout from TRELLIS p_uncond=0.1).  The
+        MetricScaleDecoder still receives the unzeroed token so the metric
+        regression signal is preserved, while SLAT cross-attention learns to
+        produce reasonable geometry without depending on the metric token.
+
+    ss_ratio_loss_weight: when > 0, run the SS decoder a second time with
+        gradient enabled (SS backbone stays frozen) to compute a differentiable
+        aspect ratio loss on the soft occupancy output.  Requires gt_dims.
+        Needs --unfreeze-ss-decoder to have a gradient path into the decoder.
+
+    Returns (log_dims, scale_token_dropped, ss_ratio_loss).
     """
     with pipeline.device:
-        pointmap_dict = pipeline.compute_pointmap(image)
+        pointmap_dict = pipeline.compute_pointmap(image, pointmap=pointmap)
         ss_input_dict = pipeline.preprocess_image(
             image, pipeline.ss_preprocessor, pointmap=pointmap_dict["pointmap"]
         )
@@ -199,6 +547,25 @@ def predict_log_dims(
                 inference_steps=stage1_steps,
                 use_distillation=False,
             )
+
+        # SS aspect ratio loss (decoder-only, backbone stays frozen).
+        # Run the SS decoder again outside no_grad on the detached shape_latent so
+        # gradients flow into the decoder weights only.  Requires --unfreeze-ss-decoder.
+        ss_ratio_loss = torch.zeros((), device=pipeline.device)
+        if ss_ratio_loss_weight > 0.0 and gt_dims is not None:
+            if "ss_decoder" in pipeline.models:
+                _ss_dec = pipeline.models["ss_decoder"]
+            else:
+                _ss_dec = None
+            if _ss_dec is not None:
+                _shape = ss_return_dict["shape"].detach()
+                _B = _shape.shape[0]
+                _ss_logits = _ss_dec(
+                    _shape.permute(0, 2, 1).contiguous().view(_B, 8, 16, 16, 16)
+                )
+                ss_ratio_loss = compute_ss_aspect_ratio_loss(
+                    _ss_logits, gt_dims.to(device=pipeline.device)
+                )
 
         # Scale token computed with gradient — feeds both SLAT conditioning and
         # the decoder directly.  SS scale features are detached (SS is frozen).
@@ -219,6 +586,7 @@ def predict_log_dims(
         orig_backbone_emb = None
         orig_external_emb = None
         slat_backbone = None
+        scale_token_dropped = False
         if inject_scale_token and hasattr(pipeline, "_get_slat_backbone"):
             # Normalize the token for SLAT injection only — the MetricScaleHead output
             # magnitude is unconstrained (trained for MetricScaleDecoder, not cross-attn).
@@ -226,7 +594,12 @@ def predict_log_dims(
             # preventing bfloat16 attention overflow in SLAT cross_attn.
             import torch.nn.functional as F
             token_for_cond_base = F.layer_norm(scale_token, [scale_token.shape[-1]])
-            token_for_cond = token_for_cond_base if unfreeze_cross_attn else token_for_cond_base.detach()
+            if p_uncond_scale_token > 0.0 and torch.rand(1).item() < p_uncond_scale_token:
+                # CFG-style dropout: SLAT sees a zero token; decoder still sees the real one.
+                token_for_cond = torch.zeros_like(token_for_cond_base)
+                scale_token_dropped = True
+            else:
+                token_for_cond = token_for_cond_base if unfreeze_cross_attn else token_for_cond_base.detach()
             slat_backbone = pipeline._get_slat_backbone()
             if slat_backbone is not None:
                 orig_backbone_emb = slat_backbone.condition_embedder
@@ -257,11 +630,12 @@ def predict_log_dims(
         # When cross-attn is unfrozen, don't detach slat.feats — gradients must
         # flow from the decoder through SLAT back to the scale token.
         slat_feats = slat.feats if unfreeze_cross_attn else slat.feats.detach()
-        return scale_decoder(
+        log_dims = scale_decoder(
             slat_feats,
             scale_token,
             slat.coords[:, 0],
         )
+        return log_dims, scale_token_dropped, ss_ratio_loss
 
 
 def encode_metric_scale_features(
@@ -270,9 +644,13 @@ def encode_metric_scale_features(
     metric_dims: torch.Tensor,
     stage1_steps: int | None,
     stage2_steps: int | None,
+    pointmap_store: Moge2PointmapStore | None = None,
 ) -> dict:
+    pointmap = (
+        pointmap_store.lookup(item["image_name"]) if pointmap_store is not None else None
+    )
     with pipeline.device:
-        pointmap_dict = pipeline.compute_pointmap(item["image"])
+        pointmap_dict = pipeline.compute_pointmap(item["image"], pointmap=pointmap)
         ss_input_dict = pipeline.preprocess_image(
             item["image"], pipeline.ss_preprocessor, pointmap=pointmap_dict["pointmap"]
         )
@@ -314,8 +692,9 @@ def encode_metric_scale_features(
 def predict_cached_log_dims(
     pipeline,
     scale_head: MetricScaleHead,
-    scale_decoder: MetricScaleDecoder,
+    scale_decoder,
     features: dict,
+    anchors: dict | None = None,
 ) -> torch.Tensor:
     shape = features["shape"].to(pipeline.device)
     pointmap_scale = features["pointmap_scale"]
@@ -332,6 +711,13 @@ def predict_cached_log_dims(
         ss_scale_features = ss_scale_features.to(pipeline.device)
 
     scale_token = scale_head(shape, ss_scale_features, pointmap_scale, pointmap_shift)
+    if anchors is not None:
+        return scale_decoder(
+            features["slat_feats"].to(pipeline.device),
+            scale_token,
+            features["batch_indices"].to(pipeline.device),
+            anchor_feats_for(features, anchors, pipeline.device),
+        )
     return scale_decoder(
         features["slat_feats"].to(pipeline.device),
         scale_token,
@@ -342,8 +728,9 @@ def predict_cached_log_dims(
 def evaluate_cached_features(
     pipeline,
     scale_head: MetricScaleHead,
-    scale_decoder: MetricScaleDecoder,
+    scale_decoder,
     feature_cache: list[dict],
+    anchors: dict | None = None,
 ) -> dict:
     losses = []
     rel_errors = []
@@ -357,7 +744,7 @@ def evaluate_cached_features(
     with torch.no_grad():
         for features in feature_cache:
             log_pred = predict_cached_log_dims(
-                pipeline, scale_head, scale_decoder, features
+                pipeline, scale_head, scale_decoder, features, anchors=anchors
             )[0]
             target = features["metric_dims"].to(pipeline.device)
             log_target = torch.log(target.clamp(min=1e-6))
@@ -375,6 +762,154 @@ def evaluate_cached_features(
             source_errors_cm[features.get("source", "unknown")].append(abs_cm_cpu.mean())
     scale_head.train()
     scale_decoder.train()
+    rel_tensor = torch.stack(rel_errors)
+    abs_cm_tensor = torch.stack(abs_errors_cm)
+    return {
+        "loss": float(torch.stack(losses).mean()),
+        "mean_abs_pct": float(rel_tensor.mean()) * 100,
+        "median_abs_pct": float(rel_tensor.median()) * 100,
+        "axis_mean_abs_pct": [float(v) * 100 for v in rel_tensor.mean(dim=0)],
+        "mean_abs_cm": float(abs_cm_tensor.mean()),
+        "median_abs_cm": float(abs_cm_tensor.median()),
+        "axis_mean_abs_cm": [float(v) for v in abs_cm_tensor.mean(dim=0)],
+        "category_mean_abs_pct": {
+            category: float(torch.stack(values).mean()) * 100
+            for category, values in sorted(category_errors.items())
+        },
+        "category_mean_abs_cm": {
+            category: float(torch.stack(values).mean())
+            for category, values in sorted(category_errors_cm.items())
+        },
+        "source_mean_abs_pct": {
+            source: float(torch.stack(values).mean()) * 100
+            for source, values in sorted(source_errors.items())
+        },
+        "source_mean_abs_cm": {
+            source: float(torch.stack(values).mean())
+            for source, values in sorted(source_errors_cm.items())
+        },
+    }
+
+
+def evaluate_live_dataset(
+    pipeline,
+    scale_head: MetricScaleHead,
+    scale_decoder: MetricScaleDecoder,
+    dataset,
+    min_mask_pixels: int,
+    stage1_steps: int | None,
+    stage2_steps: int | None,
+    inject_scale_token: bool,
+    desc: str,
+    max_samples: int | None = None,
+    pointmap_store: Moge2PointmapStore | None = None,
+) -> dict | None:
+    """
+    Evaluate with a live SS/SLAT forward pass so metrics reflect the current
+    SLAT cross-attention weights, not stale cached latents.
+
+    max_samples: when set (>0) and smaller than the dataset, evaluate a strided
+    subset of roughly this many examples. Striding (rather than taking the first
+    N) keeps the subset balanced across the source-ordered held-out set, so the
+    cheap intra-epoch eval is not dominated by a single source.
+    """
+    if dataset is None or len(dataset) == 0:
+        return None
+
+    eval_stride = 1
+    if max_samples and max_samples > 0 and len(dataset) > max_samples:
+        eval_stride = (len(dataset) + max_samples - 1) // max_samples
+
+    losses = []
+    rel_errors = []
+    abs_errors_cm = []
+    category_errors = defaultdict(list)
+    category_errors_cm = defaultdict(list)
+    source_errors = defaultdict(list)
+    source_errors_cm = defaultdict(list)
+
+    scale_head_was_training = scale_head.training
+    scale_decoder_was_training = scale_decoder.training
+    scale_head.eval()
+    scale_decoder.eval()
+    slat_backbone = (
+        pipeline._get_slat_backbone()
+        if hasattr(pipeline, "_get_slat_backbone")
+        else None
+    )
+    checkpoint_modes = None
+    if slat_backbone is not None:
+        checkpoint_modes = [block.use_checkpoint for block in slat_backbone.blocks]
+        for block in slat_backbone.blocks:
+            block.use_checkpoint = False
+
+    eval_skipped = 0
+    try:
+        with torch.no_grad():
+            for _eval_idx, item in enumerate(tqdm(dataset, desc=desc)):
+                if eval_stride > 1 and (_eval_idx % eval_stride) != 0:
+                    continue
+                if int(item["mask_pixels"]) < min_mask_pixels:
+                    continue
+                try:
+                    log_pred, _, _ratio = predict_log_dims(
+                        pipeline,
+                        scale_head,
+                        scale_decoder,
+                        item["image"],
+                        stage1_steps,
+                        stage2_steps,
+                        inject_scale_token=inject_scale_token,
+                        unfreeze_cross_attn=False,
+                        p_uncond_scale_token=0.0,
+                        pointmap=(
+                            pointmap_store.lookup(item["image_name"])
+                            if pointmap_store is not None
+                            else None
+                        ),
+                    )
+                except (IndexError, RuntimeError) as pipe_err:
+                    msg = str(pipe_err)
+                    if "out of memory" in msg.lower():
+                        raise
+                    eval_skipped += 1
+                    print(
+                        f"[eval-skip] {type(pipe_err).__name__}: {msg[:200]} "
+                        f"(total eval skips={eval_skipped})"
+                    )
+                    torch.cuda.empty_cache()
+                    continue
+                log_pred = log_pred[0]
+                target = torch.as_tensor(
+                    item["metric_dims"], dtype=torch.float32, device=pipeline.device
+                )
+                log_target = torch.log(target.clamp(min=1e-6))
+                pred = torch.exp(log_pred)
+                rel = (pred - target).abs() / target.clamp(min=1e-6)
+                abs_cm = (pred - target).abs() * 100.0
+                losses.append(F.smooth_l1_loss(log_pred, log_target).detach().cpu())
+                rel_cpu = rel.detach().cpu()
+                abs_cm_cpu = abs_cm.detach().cpu()
+                rel_errors.append(rel_cpu)
+                abs_errors_cm.append(abs_cm_cpu)
+                category = item.get("category", "unknown")
+                source = item.get("source", "unknown")
+                category_errors[category].append(rel_cpu.mean())
+                category_errors_cm[category].append(abs_cm_cpu.mean())
+                source_errors[source].append(rel_cpu.mean())
+                source_errors_cm[source].append(abs_cm_cpu.mean())
+    finally:
+        if checkpoint_modes is not None:
+            for block, use_checkpoint in zip(slat_backbone.blocks, checkpoint_modes):
+                block.use_checkpoint = use_checkpoint
+        if scale_head_was_training:
+            scale_head.train()
+        if scale_decoder_was_training:
+            scale_decoder.train()
+
+    if not losses:
+        return None
+
     rel_tensor = torch.stack(rel_errors)
     abs_cm_tensor = torch.stack(abs_errors_cm)
     return {
@@ -689,6 +1224,7 @@ def save_metric_checkpoint(
     epoch: int | None = None,
     metrics: dict | None = None,
     slat_backbone=None,
+    ss_decoder=None,
 ) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -708,6 +1244,8 @@ def save_metric_checkpoint(
             for k, v in block.norm2.state_dict().items():
                 cross_attn_state[f"blocks.{i}.norm2.{k}"] = v
         payload["slat_cross_attn"] = cross_attn_state
+    if ss_decoder is not None:
+        payload["ss_decoder"] = ss_decoder.state_dict()
     torch.save(payload, output_path)
 
 
@@ -793,16 +1331,56 @@ def make_train_eval_subsets(
     seed: int,
     shuffle_split: bool,
     split_group: str,
+    heldout_per_source: dict[str, int] | None = None,
 ) -> tuple[Subset, Subset | None]:
     dataset_len = len(dataset)
+    if heldout_per_source is not None:
+        if not hasattr(dataset, "records"):
+            raise ValueError(
+                "--heldout-per-source requires a dataset that exposes "
+                "`records` (OmniNOCSObjectDataset). Got "
+                f"{type(dataset).__name__}."
+            )
+        source_indices: dict[str, list[int]] = defaultdict(list)
+        for idx, record in enumerate(dataset.records):
+            source_indices[record["source"]].append(idx)
+        train_indices: list[int] = []
+        eval_indices: list[int] = []
+        for source, indices in source_indices.items():
+            n_heldout = heldout_per_source.get(source, 0)
+            if n_heldout > len(indices):
+                print(
+                    f"Warning: requested {n_heldout} heldout records for "
+                    f"source={source} but only {len(indices)} available; "
+                    f"using all but 1 as heldout."
+                )
+                n_heldout = max(len(indices) - 1, 0)
+            split_point = len(indices) - n_heldout
+            train_indices.extend(indices[:split_point])
+            eval_indices.extend(indices[split_point:])
+        train_subset = Subset(dataset, train_indices)
+        eval_subset = Subset(dataset, eval_indices) if eval_indices else None
+        per_source_report = ", ".join(
+            f"{src}: train={len([i for i in train_indices if dataset.records[i]['source'] == src])}"
+            f" / heldout={len([i for i in eval_indices if dataset.records[i]['source'] == src])}"
+            for src in sorted(source_indices)
+        )
+        print(
+            f"Split (per-source) train={len(train_subset)} "
+            f"heldout={0 if eval_subset is None else len(eval_subset)} "
+            f"[{per_source_report}]"
+        )
+        return train_subset, eval_subset
     if split_group == "record":
         indices = list(range(dataset_len))
         if shuffle_split:
             generator = torch.Generator().manual_seed(seed)
             indices = torch.randperm(dataset_len, generator=generator).tolist()
-        train_count = dataset_len if train_samples is None or train_samples <= 0 else train_samples
-        train_count = min(train_count, dataset_len)
         eval_count = max(heldout_samples, 0)
+        if train_samples is None or train_samples <= 0:
+            train_count = max(dataset_len - eval_count, 0)
+        else:
+            train_count = min(train_samples, dataset_len)
         eval_start = train_count
         eval_stop = min(eval_start + eval_count, dataset_len)
         train_indices = indices[:train_count]
@@ -816,8 +1394,11 @@ def make_train_eval_subsets(
         if shuffle_split:
             permutation = torch.randperm(len(groups), generator=generator).tolist()
             groups = [groups[idx] for idx in permutation]
-        train_target = dataset_len if train_samples is None or train_samples <= 0 else train_samples
         heldout_target = max(heldout_samples, 0)
+        if train_samples is None or train_samples <= 0:
+            train_target = max(dataset_len - heldout_target, 0)
+        else:
+            train_target = train_samples
         train_indices = []
         eval_indices = []
         for group in groups:
@@ -852,11 +1433,21 @@ def cache_metric_scale_features(
     stage1_steps: int | None,
     stage2_steps: int | None,
     desc: str,
+    pointmap_store: Moge2PointmapStore | None = None,
+    partial_path: str | None = None,
+    partial_every: int = 250,
 ) -> list[dict]:
     feature_cache = []
+    done_uids: set = set()
+    if partial_path and Path(partial_path).exists():
+        feature_cache = torch.load(partial_path, weights_only=False)
+        done_uids = {f["uid"] for f in feature_cache}
+        print(f"{desc}: resumed {len(feature_cache)} entries from {partial_path}")
     skipped_errors = 0
     for item in tqdm(dataset, desc=desc):
         if int(item["mask_pixels"]) < min_mask_pixels:
+            continue
+        if item["uid"] in done_uids:
             continue
         try:
             feature_cache.append(
@@ -866,8 +1457,11 @@ def cache_metric_scale_features(
                     torch.as_tensor(item["metric_dims"], dtype=torch.float32),
                     stage1_steps,
                     stage2_steps,
+                    pointmap_store=pointmap_store,
                 )
             )
+        except KeyError:
+            raise  # missing precomputed pointmap — abort rather than mix anchors
         except Exception as exc:
             skipped_errors += 1
             print(
@@ -875,6 +1469,11 @@ def cache_metric_scale_features(
                 f"uid={item.get('uid')} source={item.get('source')} "
                 f"image_name={item.get('image_name')} error={exc}"
             )
+            continue
+        if partial_path and len(feature_cache) % partial_every == 0:
+            tmp = f"{partial_path}.tmp"
+            torch.save(feature_cache, tmp)
+            os.replace(tmp, partial_path)
     if skipped_errors:
         print(f"{desc}: skipped {skipped_errors} examples due to pipeline errors")
     return feature_cache
@@ -904,12 +1503,14 @@ def save_feature_cache(path: str, train_cache: list[dict], heldout_cache: list[d
     )
 
 
-def load_feature_cache(path: str) -> tuple[list[dict], list[dict], dict]:
+def load_feature_cache(path: str, require_train: bool = True) -> tuple[list[dict], list[dict], dict]:
     cache = torch.load(path, map_location="cpu", weights_only=False)
     train_cache = cache.get("train", [])
     heldout_cache = cache.get("heldout", [])
-    if not train_cache:
+    if require_train and not train_cache:
         raise RuntimeError(f"No train features found in cache: {path}")
+    if not train_cache and not heldout_cache:
+        raise RuntimeError(f"No features found in cache: {path}")
     print(
         f"Loaded feature cache from {path} "
         f"(train={len(train_cache)}, heldout={len(heldout_cache)})"
@@ -954,6 +1555,7 @@ def load_metric_checkpoint(
     scale_head: MetricScaleHead,
     scale_decoder: MetricScaleDecoder,
     slat_backbone=None,
+    ss_decoder=None,
 ) -> dict:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     # strict=False: old checkpoints may have ctx_channels=768 or 10-dim input;
@@ -975,6 +1577,9 @@ def load_metric_checkpoint(
             if block_n2:
                 block.norm2.load_state_dict(block_n2, strict=True)
         print(f"Restored SLAT cross-attn weights from {path}")
+    if ss_decoder is not None and "ss_decoder" in checkpoint:
+        ss_decoder.load_state_dict(checkpoint["ss_decoder"], strict=True)
+        print(f"Restored SS decoder weights from {path}")
     print(f"Loaded metric scale checkpoint from {path}")
     return checkpoint
 
@@ -982,23 +1587,28 @@ def load_metric_checkpoint(
 def evaluate_and_record(
     pipeline,
     scale_head: MetricScaleHead,
-    scale_decoder: MetricScaleDecoder,
+    scale_decoder,
     feature_cache: list[dict],
     heldout_cache: list[dict],
     metrics_output: str | None,
     wandb_run=None,
     epoch: int | None = None,
+    anchors: dict | None = None,
 ) -> dict:
-    train_metrics = evaluate_cached_features(
-        pipeline, scale_head, scale_decoder, feature_cache
-    )
-    print(format_metrics("train_eval", epoch, train_metrics))
-    print_category_metrics("train_eval", train_metrics)
-    write_metrics(metrics_output, "train", epoch, train_metrics)
-    wandb_payload = flatten_metrics("train_eval", train_metrics)
+    if feature_cache:
+        train_metrics = evaluate_cached_features(
+            pipeline, scale_head, scale_decoder, feature_cache, anchors=anchors
+        )
+        print(format_metrics("train_eval", epoch, train_metrics))
+        print_category_metrics("train_eval", train_metrics)
+        write_metrics(metrics_output, "train", epoch, train_metrics)
+        wandb_payload = flatten_metrics("train_eval", train_metrics)
+    else:
+        train_metrics = None
+        wandb_payload = {}
     if heldout_cache:
         heldout_metrics = evaluate_cached_features(
-            pipeline, scale_head, scale_decoder, heldout_cache
+            pipeline, scale_head, scale_decoder, heldout_cache, anchors=anchors
         )
         print(format_metrics("heldout_eval", epoch, heldout_metrics))
         print_category_metrics("heldout_eval", heldout_metrics)
@@ -1008,7 +1618,7 @@ def evaluate_and_record(
         heldout_metrics = None
     if epoch is not None:
         wandb_payload["epoch"] = epoch
-    wandb_log(wandb_run, wandb_payload, step=epoch)
+    wandb_log(wandb_run, wandb_payload)
     return {"train": train_metrics, "heldout": heldout_metrics}
 
 
@@ -1062,7 +1672,33 @@ def main() -> None:
         "--heldout-samples",
         type=int,
         default=0,
-        help="With --cache-latents, reserve this many examples after the train split for eval.",
+        help=(
+            "Reserve this many examples after the train split for held-out eval. "
+            "In live training, these examples are evaluated with live SS/SLAT "
+            "forward passes so current SLAT cross-attn weights are measured."
+        ),
+    )
+    parser.add_argument(
+        "--heldout-per-source",
+        default=None,
+        help=(
+            "Per-source heldout counts as a comma-separated source:count list, e.g. "
+            "'nocs_real275:64,objectron:200,arkitscenes:200'. When set, overrides "
+            "--heldout-samples; each source carves the specified number of records "
+            "off the tail of its own records (record-order split). Requires "
+            "--dataset omninocs-mixed."
+        ),
+    )
+    parser.add_argument(
+        "--balanced-sampling",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use a WeightedRandomSampler with weight = 1/source_count so each batch "
+            "is balanced 1:1:... across the OmniNOCS sources, regardless of raw "
+            "source size. Combine with --max-records-per-source to cap dataset size "
+            "before sampling. Requires --dataset omninocs-mixed."
+        ),
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -1077,6 +1713,23 @@ def main() -> None:
         help="Keep grouped records together when forming train/held-out splits.",
     )
     parser.add_argument("--min-mask-pixels", type=int, default=500)
+    parser.add_argument(
+        "--anchor-tables", default=None,
+        help="Comma-separated jsonl paths from pose_scale_heldout_compare.py "
+             "(pose-decoder scale + voxel extents per uid). Required for "
+             "--decoder anchor/factored; cache entries without an anchor are dropped.")
+    parser.add_argument(
+        "--decoder", choices=["baseline", "anchor", "factored"], default="baseline",
+        help="baseline: stock MetricScaleDecoder. anchor (v1a): + anchor input "
+             "features, absolute log-WHD + aux iso loss, shared gradients. "
+             "factored (v1b): MoGe-2-style decoupled iso/proportions branches.")
+    parser.add_argument(
+        "--scale-loss-weight", type=float, default=0.0,
+        help="Weight on the iso-scale loss (log max(pred) vs log max(gt))^2. "
+             "v1a aux loss / v1b exclusive iso loss.")
+    parser.add_argument(
+        "--prop-loss-weight", type=float, default=1.0,
+        help="Weight on the max-pinned log-proportions loss (factored decoder).")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -1099,6 +1752,28 @@ def main() -> None:
     parser.add_argument("--save-feature-cache", default=None)
     parser.add_argument("--load-feature-cache", default=None)
     parser.add_argument(
+        "--cache-heldout-only",
+        action="store_true",
+        help=(
+            "With --cache-latents: skip the train split and cache only the held-out "
+            "records (e.g. to re-encode the eval set at inference-grade flow steps). "
+            "The split itself is unchanged — same dataset args + seed give the same "
+            "held-out set."
+        ),
+    )
+    parser.add_argument(
+        "--moge2-pointmap-dir",
+        default=None,
+        help=(
+            "Directory of precomputed MoGe-2 global metric pointmaps "
+            "(scripts/precompute_moge2_pointmaps.py output). When set, every "
+            "pipeline forward (train / live eval / latent caching) injects the "
+            "cached pointmap via compute_pointmap(pointmap=...) instead of live "
+            "MoGe-v1, making pointmap_scale/shift and SS conditioning metric. "
+            "A frame missing from the manifest is a hard error."
+        ),
+    )
+    parser.add_argument(
         "--load-checkpoint",
         default=None,
         help="Load a saved metric-head checkpoint before training or eval-only metrics.",
@@ -1120,6 +1795,40 @@ def main() -> None:
             "Save a rolling recovery checkpoint every N epochs during live training "
             "(non-cached path). Overwrites the same file each time to limit disk usage. "
             "Strongly recommended when --unfreeze-slat-cross-attn is set."
+        ),
+    )
+    parser.add_argument(
+        "--eval-every-steps",
+        type=int,
+        default=0,
+        help=(
+            "Run a live held-out eval (and update the best checkpoint) every N "
+            "optimizer steps WITHIN an epoch, not just at epoch end. Gives fast "
+            "feedback on long epochs and makes the best checkpoint reflect "
+            "mid-epoch progress. 0 = end-of-epoch eval only."
+        ),
+    )
+    parser.add_argument(
+        "--eval-steps-max-samples",
+        type=int,
+        default=0,
+        help=(
+            "When --eval-every-steps fires, cap the intra-epoch eval to ~this many "
+            "held-out samples (strided across the set to stay source-balanced) for "
+            "speed. 0 = use the full held-out set. End-of-epoch eval is always full."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-every-steps",
+        type=int,
+        default=0,
+        help=(
+            "Save a rolling recovery checkpoint every N optimizer steps within an "
+            "epoch (overwrites the same _resume file). Independent of "
+            "--eval-every-steps; set this smaller for tighter restart safety so a "
+            "mid-epoch crash loses minutes of weights, not a whole epoch. Resume is "
+            "still epoch-granular (re-runs the epoch's earlier steps), but the "
+            "trained weights survive. 0 = end-of-epoch only."
         ),
     )
     parser.add_argument(
@@ -1154,20 +1863,90 @@ def main() -> None:
     parser.add_argument(
         "--slat-lr",
         type=float,
-        default=1e-5,
+        default=1e-6,
         help=(
             "Learning rate for the SLAT cross-attention params when "
             "--unfreeze-slat-cross-attn is set. Should be lower than --lr to "
-            "avoid catastrophic forgetting of the DINOv2 conditioning."
+            "avoid catastrophic forgetting of the DINOv2 conditioning. "
+            "Lowered from 1e-5 → 1e-6 after slat_conditioned_v1 NaN'd "
+            "cross_attn weights on its first optimizer step."
         ),
     )
     parser.add_argument(
-        "--eval-feature-cache",
-        default=None,
+        "--slat-lr-warmup-steps",
+        type=int,
+        default=500,
         help=(
-            "Pre-baked feature cache (.pt) used for periodic eval during live "
-            "(non-cached) training. Provides a cheap proxy metric without re-running "
-            "the full pipeline on the held-out set every eval epoch."
+            "Linearly warm up the SLAT cross-attn group LR from 0 to "
+            "--slat-lr over this many optimizer steps. The metric-head group "
+            "is not warmed up. Set 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--fp32-slat-cross-attn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run SLAT cross_attn + norm2 in fp32 with input/output dtype shims "
+            "while keeping the rest of SLAT in bf16/fp16. Prevents bf16 "
+            "backward overflow that NaN-corrupted cross_attn weights after "
+            "the first optimizer step of slat_conditioned_v1."
+        ),
+    )
+    parser.add_argument(
+        "--ss-ratio-loss-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight of the SS aspect-ratio loss added to the metric regression loss. "
+            "Computes a scale-invariant loss on the soft voxel extent (SS decoder "
+            "soft occupancy output) vs GT [W, H, D] dims. Requires "
+            "--unfreeze-ss-decoder to have a gradient path. Start at 0.01–0.1."
+        ),
+    )
+    parser.add_argument(
+        "--unfreeze-ss-decoder",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Unfreeze the SS decoder (convolutional 16^3 → 64^3 network) so the "
+            "aspect-ratio loss can update its weights. The SS backbone stays frozen. "
+            "Only active in the non-cached training path."
+        ),
+    )
+    parser.add_argument(
+        "--max-consecutive-nan-skips",
+        type=int,
+        default=50,
+        help=(
+            "Abort live training if this many consecutive optimizer steps are "
+            "skipped due to NaN/Inf gradients. The previous run silently spun "
+            "for ~26h after a single NaN cascade because the loop kept "
+            "running forward+backward on every NaN-skip without progress. "
+            "Set 0 to disable the watchdog."
+        ),
+    )
+    parser.add_argument(
+        "--p-uncond-scale-token",
+        type=float,
+        default=0.0,
+        help=(
+            "Probability of zeroing the SLAT-injected scale token during training "
+            "(CFG-style dropout from TRELLIS p_uncond=0.1). Active only in the "
+            "live (non-cached) training path. The MetricScaleDecoder still sees "
+            "the unzeroed token so the metric regression signal is preserved. "
+            "Recommended 0.1 with --unfreeze-slat-cross-attn."
+        ),
+    )
+    parser.add_argument(
+        "--log-step-every",
+        type=int,
+        default=1,
+        help=(
+            "Log per-step training stability metrics (loss, total grad_norm, "
+            "per-group grad_norm, adaptive clip threshold, NaN/OOM skips, "
+            "scale-token dropout indicator) to wandb every N steps. 0 disables "
+            "step-level logging (epoch-level logging is always on)."
         ),
     )
     parser.add_argument(
@@ -1236,7 +2015,9 @@ def main() -> None:
     wandb_run = init_wandb(args)
 
     if args.load_feature_cache:
-        feature_cache, heldout_cache, cache_args = load_feature_cache(args.load_feature_cache)
+        feature_cache, heldout_cache, cache_args = load_feature_cache(
+            args.load_feature_cache, require_train=not args.eval_only
+        )
         validate_feature_cache_manifest(
             args.validate_manifest,
             feature_cache,
@@ -1244,9 +2025,30 @@ def main() -> None:
         )
         pipeline = DeviceOnlyPipeline(args.device)
         train_dataset = None
+        eval_dataset = None
         loader = None
+        pointmap_store = None  # cached training runs no pipeline forwards
     else:
         dataset = build_dataset(args)
+
+        heldout_per_source: dict[str, int] | None = None
+        if args.heldout_per_source:
+            if args.dataset != "omninocs-mixed":
+                raise ValueError(
+                    "--heldout-per-source requires --dataset omninocs-mixed."
+                )
+            heldout_per_source = {}
+            for piece in args.heldout_per_source.split(","):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                if ":" not in piece:
+                    raise ValueError(
+                        f"--heldout-per-source entry {piece!r} must be 'source:count'."
+                    )
+                src, count_str = piece.split(":", 1)
+                heldout_per_source[src.strip()] = int(count_str)
+
         train_dataset, eval_dataset = make_train_eval_subsets(
             dataset,
             args.overfit_samples,
@@ -1254,31 +2056,80 @@ def main() -> None:
             args.seed,
             args.shuffle_split,
             args.split_group,
+            heldout_per_source=heldout_per_source,
         )
+
+        sampler = None
+        shuffle = True
+        if args.balanced_sampling:
+            if args.dataset != "omninocs-mixed":
+                raise ValueError(
+                    "--balanced-sampling requires --dataset omninocs-mixed."
+                )
+            if not hasattr(dataset, "records"):
+                raise ValueError(
+                    "--balanced-sampling requires a dataset exposing `records`."
+                )
+            source_counts: dict[str, int] = defaultdict(int)
+            for idx in train_dataset.indices:
+                source_counts[dataset.records[idx]["source"]] += 1
+            weights = [
+                1.0 / source_counts[dataset.records[idx]["source"]]
+                for idx in train_dataset.indices
+            ]
+            sampler = WeightedRandomSampler(
+                weights=weights,
+                num_samples=len(train_dataset),
+                replacement=True,
+                generator=torch.Generator().manual_seed(args.seed),
+            )
+            shuffle = False
+            counts_report = ", ".join(
+                f"{src}={cnt}" for src, cnt in sorted(source_counts.items())
+            )
+            print(
+                f"Balanced sampler: per-source counts {{{counts_report}}}; "
+                f"num_samples={len(train_dataset)} replacement=True"
+            )
 
         loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=sampler,
             num_workers=0,
             collate_fn=collate_instances,
         )
 
         pipeline = load_pipeline(args.config, args.device, args.compile_model)
+        pointmap_store = (
+            Moge2PointmapStore(args.moge2_pointmap_dir)
+            if args.moge2_pointmap_dir
+            else None
+        )
         feature_cache = []
         heldout_cache = []
 
         if args.cache_latents:
-            feature_cache = cache_metric_scale_features(
-                pipeline,
-                train_dataset,
-                args.min_mask_pixels,
-                args.stage1_steps,
-                args.stage2_steps,
-                "caching train features",
-            )
-            if not feature_cache:
-                raise RuntimeError("No metric-scale training examples remained after filtering.")
+            if not args.cache_heldout_only:
+                feature_cache = cache_metric_scale_features(
+                    pipeline,
+                    train_dataset,
+                    args.min_mask_pixels,
+                    args.stage1_steps,
+                    args.stage2_steps,
+                    "caching train features",
+                    pointmap_store=pointmap_store,
+                    partial_path=(
+                        f"{args.save_feature_cache}.train.partial"
+                        if args.save_feature_cache
+                        else None
+                    ),
+                )
+                if not feature_cache:
+                    raise RuntimeError(
+                        "No metric-scale training examples remained after filtering."
+                    )
             if eval_dataset is not None:
                 heldout_cache = cache_metric_scale_features(
                     pipeline,
@@ -1287,6 +2138,12 @@ def main() -> None:
                     args.stage1_steps,
                     args.stage2_steps,
                     "caching held-out features",
+                    pointmap_store=pointmap_store,
+                    partial_path=(
+                        f"{args.save_feature_cache}.heldout.partial"
+                        if args.save_feature_cache
+                        else None
+                    ),
                 )
                 if not heldout_cache:
                     print("Held-out split had no usable examples after mask filtering.")
@@ -1294,11 +2151,33 @@ def main() -> None:
                 save_feature_cache(
                     args.save_feature_cache, feature_cache, heldout_cache, args
                 )
+                for suffix in (".train.partial", ".heldout.partial"):
+                    partial = Path(f"{args.save_feature_cache}{suffix}")
+                    partial.unlink(missing_ok=True)
             if args.cache_only:
                 return
 
     scale_head = MetricScaleHead().to(pipeline.device).train()
-    scale_decoder = MetricScaleDecoder().to(pipeline.device).train()
+    if args.decoder == "anchor":
+        scale_decoder = AnchorAugmentedDecoder().to(pipeline.device).train()
+    elif args.decoder == "factored":
+        scale_decoder = FactoredScaleDecoder().to(pipeline.device).train()
+    else:
+        scale_decoder = MetricScaleDecoder().to(pipeline.device).train()
+
+    anchors = None
+    if args.decoder != "baseline":
+        if not args.anchor_tables:
+            raise RuntimeError(f"--decoder {args.decoder} requires --anchor-tables.")
+        if not (args.cache_latents or args.load_feature_cache):
+            raise RuntimeError(f"--decoder {args.decoder} is cached-regime only.")
+        anchors = load_anchor_tables(args.anchor_tables)
+        for name, cache_list in (("train", feature_cache), ("heldout", heldout_cache)):
+            before = len(cache_list)
+            cache_list[:] = [f for f in cache_list if f["uid"] in anchors]
+            if len(cache_list) != before:
+                print(f"{name} cache: dropped {before - len(cache_list)} of {before} "
+                      f"entries without anchor records")
 
     # Selectively unfreeze SLAT cross-attn after all other pipeline params are
     # frozen.  collect_slat_cross_attn_params flips requires_grad back to True
@@ -1306,21 +2185,25 @@ def main() -> None:
     slat_backbone = None
     slat_cross_attn_params = []
     if args.unfreeze_slat_cross_attn:
-        slat_cross_attn_params, slat_backbone = collect_slat_cross_attn_params(pipeline)
+        slat_cross_attn_params, slat_backbone = collect_slat_cross_attn_params(
+            pipeline, upcast_fp32=args.fp32_slat_cross_attn
+        )
+        for block in slat_backbone.blocks:
+            block.use_checkpoint = True
+        print(f"Enabled gradient checkpointing on {len(slat_backbone.blocks)} SLAT transformer blocks")
+
+    ss_decoder_params = []
+    if args.unfreeze_ss_decoder:
+        ss_decoder_params = collect_ss_decoder_params(pipeline)
 
     resume_start_epoch = 0
     resume_path = args.resume_from or args.load_checkpoint
     if resume_path:
-        ckpt = load_metric_checkpoint(resume_path, scale_head, scale_decoder, slat_backbone)
+        ckpt = load_metric_checkpoint(resume_path, scale_head, scale_decoder, slat_backbone,
+                                      ss_decoder=pipeline.models.get("ss_decoder") if args.unfreeze_ss_decoder else None)
         if args.resume_from and ckpt.get("epoch") is not None:
             resume_start_epoch = int(ckpt["epoch"])
             print(f"Resuming from epoch {resume_start_epoch}")
-
-    # Load a separate eval cache for the non-cached training path.
-    eval_feature_cache: list[dict] = []
-    eval_heldout_cache: list[dict] = []
-    if args.eval_feature_cache and not (args.cache_latents or args.load_feature_cache):
-        eval_feature_cache, eval_heldout_cache, _ = load_feature_cache(args.eval_feature_cache)
 
     if args.eval_only:
         if not args.load_feature_cache:
@@ -1350,6 +2233,7 @@ def main() -> None:
             args.metrics_output,
             wandb_run,
             None,
+            anchors=anchors,
         )
         write_manifest(
             args.manifest_output,
@@ -1372,11 +2256,14 @@ def main() -> None:
     ]
     if slat_cross_attn_params:
         param_groups.append({"params": slat_cross_attn_params, "lr": args.slat_lr})
+    if ss_decoder_params:
+        param_groups.append({"params": ss_decoder_params, "lr": args.lr})
     optimizer = torch.optim.AdamW(
         param_groups,
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
+    grad_clipper = AdaptiveGradClipper(max_norm=1.0, clip_percentile=95.0, buffer_size=1000)
 
     if args.cache_latents or args.load_feature_cache:
         baseline_metrics = category_mean_baseline(feature_cache, heldout_cache)
@@ -1409,17 +2296,42 @@ def main() -> None:
                 for idx in order[offset : offset + args.batch_size]:
                     features = feature_cache[idx]
                     log_pred = predict_cached_log_dims(
-                        pipeline, scale_head, scale_decoder, features
-                    )
+                        pipeline, scale_head, scale_decoder, features, anchors=anchors
+                    )[0]
                     log_target = torch.log(
                         features["metric_dims"].to(pipeline.device).clamp(min=1e-6)
                     )
-                    losses.append(F.smooth_l1_loss(log_pred[0], log_target))
+                    if args.decoder == "factored":
+                        # Decoupled losses (MoGe-2 §3.2): max(log_pred) == log_iso
+                        # reaches the iso branch only; max-pinned log dims reach
+                        # the proportions branch only.
+                        iso_loss = (log_pred.max() - log_target.max()) ** 2
+                        prop_loss = F.smooth_l1_loss(
+                            log_pred - log_pred.max(),
+                            log_target - log_target.max(),
+                        )
+                        losses.append(
+                            args.scale_loss_weight * iso_loss
+                            + args.prop_loss_weight * prop_loss
+                        )
+                    elif args.scale_loss_weight > 0:
+                        # v1a: absolute log loss + auxiliary iso-scale loss,
+                        # shared gradients through one prediction.
+                        losses.append(
+                            F.smooth_l1_loss(log_pred, log_target)
+                            + args.scale_loss_weight
+                            * (log_pred.max() - log_target.max()) ** 2
+                        )
+                    else:
+                        losses.append(F.smooth_l1_loss(log_pred, log_target))
 
                 loss = torch.stack(losses).mean()
                 loss.backward()
                 all_params = [p for g in optimizer.param_groups for p in g["params"]]
-                torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+                grad_norm = grad_clipper(all_params)
+                if not torch.isfinite(grad_norm):
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
                 optimizer.step()
 
                 batch_count = len(losses)
@@ -1436,7 +2348,6 @@ def main() -> None:
                     "train_epoch/examples": running_count,
                     "train_epoch/lr": optimizer.param_groups[0]["lr"],
                 },
-                step=epoch + 1,
             )
 
             if args.eval_every and (epoch + 1) % args.eval_every == 0:
@@ -1449,6 +2360,7 @@ def main() -> None:
                     args.metrics_output,
                     wandb_run,
                     epoch + 1,
+                    anchors=anchors,
                 )
                 heldout_metrics = eval_metrics.get("heldout")
                 if heldout_metrics is not None:
@@ -1464,6 +2376,7 @@ def main() -> None:
                             epoch + 1,
                             heldout_metrics,
                             slat_backbone=slat_backbone,
+                            ss_decoder=pipeline.models.get("ss_decoder") if args.unfreeze_ss_decoder else None,
                         )
                         print(
                             f"Saved best metric scale checkpoint to {best_output} "
@@ -1476,28 +2389,159 @@ def main() -> None:
                                 "best/heldout_mean_abs_pct": heldout_mean_abs_pct,
                                 "best/checkpoint_path": best_output,
                             },
-                            step=epoch + 1,
                         )
     else:
         best_heldout_mean_abs_pct = float("inf")
         best_output = args.best_output or default_best_output_path(args.output)
         best_metrics = None
 
-        # Baseline eval against the eval cache (if provided) before any training.
-        if eval_heldout_cache and args.eval_every and resume_start_epoch == 0:
-            baseline_metrics = category_mean_baseline(eval_feature_cache, eval_heldout_cache)
-            if baseline_metrics is not None:
-                print(format_metrics("category_baseline_heldout", None, baseline_metrics))
-                write_metrics(args.metrics_output, "category_baseline_heldout", None, baseline_metrics)
-                wandb_log(wandb_run, flatten_metrics("category_baseline_heldout", baseline_metrics))
+        # Baseline eval against live held-out examples before any training.
+        if eval_dataset is not None and args.eval_every and resume_start_epoch == 0:
+            heldout_metrics = evaluate_live_dataset(
+                pipeline,
+                scale_head,
+                scale_decoder,
+                eval_dataset,
+                args.min_mask_pixels,
+                args.stage1_steps,
+                args.stage2_steps,
+                inject_scale_token=args.inject_scale_token_into_slat,
+                desc="live heldout eval baseline",
+                pointmap_store=pointmap_store,
+            )
+            if heldout_metrics is not None:
+                print(format_metrics("live_heldout_eval", None, heldout_metrics))
+                print_category_metrics("live_heldout_eval", heldout_metrics)
+                write_metrics(args.metrics_output, "live_heldout", None, heldout_metrics)
+                wandb_log(wandb_run, flatten_metrics("live_heldout_eval", heldout_metrics))
 
         recovery_output = (
             str(Path(args.output).with_name(f"{Path(args.output).stem}_resume{Path(args.output).suffix}"))
-            if args.checkpoint_every else None
+            if (args.checkpoint_every or args.checkpoint_every_steps) else None
         )
 
         slat_grad_verified = not args.unfreeze_slat_cross_attn
         oom_skipped = 0
+        nan_skipped = 0
+        consecutive_nan_skipped = 0
+        pipeline_skipped = 0
+        global_step = 0
+
+        # Per-group param lists for separate grad-norm logging.
+        head_params = optimizer.param_groups[0]["params"]
+        slat_params = (
+            optimizer.param_groups[1]["params"] if len(optimizer.param_groups) > 1 else []
+        )
+
+        def _record_nan_skip(reason: str, epoch_idx: int, step_idx: int, **extra) -> bool:
+            """Common skip path: zero grads, bump counters, log to wandb, return True
+            if the watchdog should fire (caller raises). Reason is one of:
+              loss_nan, grad_nan, clipped_grad_nan
+            """
+            nonlocal nan_skipped, consecutive_nan_skipped
+            optimizer.zero_grad(set_to_none=True)
+            nan_skipped += 1
+            consecutive_nan_skipped += 1
+            payload = {
+                "train_skip/reason": reason,
+                "train_skip/nan_skipped": nan_skipped,
+                "train_skip/consecutive_nan_skipped": consecutive_nan_skipped,
+                "train_skip/oom_skipped": oom_skipped,
+                "train_skip/epoch": epoch_idx + 1,
+                "train_skip/step_idx": step_idx,
+                "train_skip/global_step": global_step,
+            }
+            payload.update(extra)
+            wandb_log(wandb_run, payload)
+            if (
+                args.max_consecutive_nan_skips
+                and consecutive_nan_skipped >= args.max_consecutive_nan_skips
+            ):
+                return True
+            return False
+
+        def _heldout_eval_and_save(
+            epoch_label: int, step_label: int | None, max_samples: int | None
+        ) -> None:
+            """Run a live held-out eval, log it, and save the best checkpoint on
+            improvement. Shared by the end-of-epoch path (step_label=None, full
+            eval) and the intra-epoch path (step_label set, optionally strided).
+            Mutates best_heldout_mean_abs_pct / best_metrics via nonlocal.
+            evaluate_live_dataset flips the heads to eval() and restores their
+            prior (train) mode in its own finally block."""
+            nonlocal best_heldout_mean_abs_pct, best_metrics
+            if eval_dataset is None:
+                return
+            tag = (
+                f"epoch {epoch_label}"
+                if step_label is None
+                else f"epoch {epoch_label} step {step_label}"
+            )
+            heldout_metrics = evaluate_live_dataset(
+                pipeline,
+                scale_head,
+                scale_decoder,
+                eval_dataset,
+                args.min_mask_pixels,
+                args.stage1_steps,
+                args.stage2_steps,
+                inject_scale_token=args.inject_scale_token_into_slat,
+                desc=f"live heldout eval {tag}",
+                max_samples=max_samples,
+                pointmap_store=pointmap_store,
+            )
+            if heldout_metrics is None:
+                return
+            print(format_metrics("live_heldout_eval", epoch_label, heldout_metrics))
+            print_category_metrics("live_heldout_eval", heldout_metrics)
+            write_metrics(args.metrics_output, "live_heldout", epoch_label, heldout_metrics)
+            payload = flatten_metrics("live_heldout_eval", heldout_metrics)
+            if step_label is not None:
+                payload["live_heldout_eval/global_step"] = step_label
+            wandb_log(wandb_run, payload)
+            heldout_mean_abs_pct = heldout_metrics["mean_abs_pct"]
+            if heldout_mean_abs_pct < best_heldout_mean_abs_pct:
+                best_heldout_mean_abs_pct = heldout_mean_abs_pct
+                best_metrics = heldout_metrics
+                save_metric_checkpoint(
+                    best_output,
+                    scale_head,
+                    scale_decoder,
+                    args,
+                    epoch_label,
+                    heldout_metrics,
+                    slat_backbone=slat_backbone,
+                    ss_decoder=pipeline.models.get("ss_decoder") if args.unfreeze_ss_decoder else None,
+                )
+                print(
+                    f"Saved best checkpoint to {best_output} "
+                    f"(epoch={epoch_label}, step={step_label}, "
+                    f"heldout_mean_abs_pct={heldout_mean_abs_pct:.2f})"
+                )
+                wandb_log(
+                    wandb_run,
+                    {
+                        "best/epoch": epoch_label,
+                        "best/heldout_mean_abs_pct": heldout_mean_abs_pct,
+                        "best/checkpoint_path": best_output,
+                    },
+                )
+
+        def _save_recovery(epoch_label: int) -> None:
+            """Overwrite the rolling recovery checkpoint so a crash loses at most
+            the steps since the last save (weights only; resume is epoch-granular)."""
+            if not recovery_output:
+                return
+            save_metric_checkpoint(
+                recovery_output,
+                scale_head,
+                scale_decoder,
+                args,
+                epoch_label,
+                slat_backbone=slat_backbone,
+                ss_decoder=pipeline.models.get("ss_decoder") if args.unfreeze_ss_decoder else None,
+            )
+            print(f"Saved recovery checkpoint to {recovery_output} (epoch={epoch_label})")
 
         for epoch in range(resume_start_epoch, args.epochs):
             running_loss = 0.0
@@ -1506,31 +2550,72 @@ def main() -> None:
             for step_idx, batch in enumerate(progress):
                 optimizer.zero_grad(set_to_none=True)
                 losses = []
+                step_dropouts = 0
                 try:
-                    for image, metric_dims, mask_pixels in zip(
-                        batch["images"], batch["metric_dims"], batch["mask_pixels"]
+                    for image, metric_dims, mask_pixels, image_name in zip(
+                        batch["images"], batch["metric_dims"], batch["mask_pixels"],
+                        batch["image_names"],
                     ):
                         if int(mask_pixels) < args.min_mask_pixels:
                             continue
-                        log_pred = predict_log_dims(
-                            pipeline,
-                            scale_head,
-                            scale_decoder,
-                            image,
-                            args.stage1_steps,
-                            args.stage2_steps,
-                            inject_scale_token=args.inject_scale_token_into_slat,
-                            unfreeze_cross_attn=args.unfreeze_slat_cross_attn,
-                        )
+                        try:
+                            log_pred, dropped, ratio_loss = predict_log_dims(
+                                pipeline,
+                                scale_head,
+                                scale_decoder,
+                                image,
+                                args.stage1_steps,
+                                args.stage2_steps,
+                                inject_scale_token=args.inject_scale_token_into_slat,
+                                unfreeze_cross_attn=args.unfreeze_slat_cross_attn,
+                                p_uncond_scale_token=args.p_uncond_scale_token,
+                                ss_ratio_loss_weight=args.ss_ratio_loss_weight,
+                                gt_dims=metric_dims.unsqueeze(0),
+                                pointmap=(
+                                    pointmap_store.lookup(image_name)
+                                    if pointmap_store is not None
+                                    else None
+                                ),
+                            )
+                        except (IndexError, RuntimeError) as pipe_err:
+                            # SS / SLAT pipeline can fail on degenerate inputs — e.g.
+                            # SS predicts zero voxels and `prune_sparse_structure` calls
+                            # `coords.min(0)` on an empty tensor (IndexError). We log and
+                            # skip the offending sample so a single bad input doesn't
+                            # abort training. CUDA OOM has its own outer handler.
+                            msg = str(pipe_err)
+                            if "out of memory" in msg.lower():
+                                raise
+                            pipeline_skipped += 1
+                            print(
+                                f"\n[pipeline-skip] epoch {epoch + 1} step {step_idx}: "
+                                f"{type(pipe_err).__name__}: {msg[:200]} "
+                                f"(total skips={pipeline_skipped})"
+                            )
+                            torch.cuda.empty_cache()
+                            continue
+                        if dropped:
+                            step_dropouts += 1
                         log_target = torch.log(metric_dims.to(pipeline.device).clamp(min=1e-6))
-                        losses.append(F.smooth_l1_loss(log_pred[0], log_target))
+                        losses.append(
+                            F.smooth_l1_loss(log_pred[0], log_target)
+                            + args.ss_ratio_loss_weight * ratio_loss
+                        )
 
                     if not losses:
                         continue
 
                     loss = torch.stack(losses).mean()
                     if torch.isnan(loss) or torch.isinf(loss):
-                        optimizer.zero_grad(set_to_none=True)
+                        if _record_nan_skip(
+                            "loss_nan", epoch, step_idx,
+                            **{"train_skip/loss": float(loss.detach().cpu())},
+                        ):
+                            raise RuntimeError(
+                                f"NaN watchdog: {consecutive_nan_skipped} consecutive "
+                                f"NaN-skipped steps (threshold={args.max_consecutive_nan_skips}). "
+                                "Aborting training. Check fp32-cross-attn flag and slat-lr."
+                            )
                         continue
                     loss.backward()
                     if not slat_grad_verified:
@@ -1542,20 +2627,110 @@ def main() -> None:
                                 "to allow gradient flow through cross_attn.to_kv."
                             )
                         slat_grad_verified = True
+
+                    # Explicit per-param finite check (TRELLIS pattern). Catches
+                    # the rare case of a corrupted single-param gradient that
+                    # leaves total norm finite.
                     all_params = [p for g in optimizer.param_groups for p in g["params"]]
-                    grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
-                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
-                        optimizer.zero_grad(set_to_none=True)
+                    nan_in_grads = any(
+                        p.grad is not None and not torch.isfinite(p.grad).all()
+                        for p in all_params
+                    )
+                    if nan_in_grads:
+                        if _record_nan_skip("grad_nan", epoch, step_idx):
+                            raise RuntimeError(
+                                f"NaN watchdog: {consecutive_nan_skipped} consecutive "
+                                f"NaN-skipped steps (threshold={args.max_consecutive_nan_skips}). "
+                                "Aborting training. Check fp32-cross-attn flag and slat-lr."
+                            )
                         continue
+
+                    # Pre-clip per-group grad norms for diagnostics. max_norm=inf
+                    # returns the norm without modifying gradients.
+                    heads_grad_norm = float(
+                        torch.nn.utils.clip_grad_norm_(head_params, max_norm=float("inf"))
+                    )
+                    slat_grad_norm = (
+                        float(torch.nn.utils.clip_grad_norm_(slat_params, max_norm=float("inf")))
+                        if slat_params
+                        else 0.0
+                    )
+
+                    grad_norm = grad_clipper(all_params)
+                    if not torch.isfinite(grad_norm):
+                        if _record_nan_skip(
+                            "clipped_grad_nan", epoch, step_idx,
+                            **{
+                                "train_skip/heads_grad_norm": heads_grad_norm,
+                                "train_skip/slat_grad_norm": slat_grad_norm,
+                            },
+                        ):
+                            raise RuntimeError(
+                                f"NaN watchdog: {consecutive_nan_skipped} consecutive "
+                                f"NaN-skipped steps (threshold={args.max_consecutive_nan_skips}). "
+                                "Aborting training. Check fp32-cross-attn flag and slat-lr."
+                            )
+                        continue
+
+                    # Linear warmup on the SLAT cross-attn LR group only. Heads
+                    # do not need warmup — they're at lr=1e-4 and their warm-start
+                    # weights handle that scale fine.
+                    if (
+                        slat_params
+                        and args.slat_lr_warmup_steps
+                        and global_step < args.slat_lr_warmup_steps
+                    ):
+                        warm_factor = (global_step + 1) / args.slat_lr_warmup_steps
+                        optimizer.param_groups[1]["lr"] = args.slat_lr * warm_factor
+
                     optimizer.step()
+                    global_step += 1
+                    consecutive_nan_skipped = 0
 
                     batch_count = len(losses)
                     running_loss += float(loss.detach().cpu()) * batch_count
                     running_count += batch_count
                     progress.set_postfix(loss=running_loss / max(running_count, 1))
 
+                    if args.log_step_every and global_step % args.log_step_every == 0:
+                        clip_log = grad_clipper.log()
+                        wandb_log(
+                            wandb_run,
+                            {
+                                "train_step/loss": float(loss.detach().cpu()),
+                                "train_step/grad_norm": float(grad_norm),
+                                "train_step/heads_grad_norm": heads_grad_norm,
+                                "train_step/slat_grad_norm": slat_grad_norm,
+                                "train_step/clip_threshold": clip_log["max_norm"],
+                                "train_step/clip_buffer_filled": int(
+                                    clip_log["buffer_filled"]
+                                ),
+                                "train_step/nan_skipped": nan_skipped,
+                                "train_step/oom_skipped": oom_skipped,
+                                "train_step/scale_token_dropped": step_dropouts,
+                                "train_step/epoch": epoch + 1,
+                                "train_step/global_step": global_step,
+                            },
+                        )
+
                     if (step_idx + 1) % 500 == 0:
                         torch.cuda.empty_cache()
+
+                    # Intra-epoch eval + recovery (fast feedback + restart safety).
+                    # Runs only on a successful optimizer step, so global_step is a
+                    # clean monotonic trigger and never double-fires on a skip/OOM.
+                    if (
+                        args.eval_every_steps
+                        and global_step % args.eval_every_steps == 0
+                    ):
+                        _heldout_eval_and_save(
+                            epoch + 1, global_step, args.eval_steps_max_samples or None
+                        )
+                    if (
+                        args.checkpoint_every_steps
+                        and global_step % args.checkpoint_every_steps == 0
+                    ):
+                        _save_recovery(epoch + 1)
 
                 except torch.cuda.OutOfMemoryError:
                     optimizer.zero_grad(set_to_none=True)
@@ -1566,6 +2741,18 @@ def main() -> None:
                         f"\n[OOM] epoch {epoch + 1} step {step_idx}: skipped "
                         f"(total OOM skips={oom_skipped})"
                     )
+                    wandb_log(
+                        wandb_run,
+                        {
+                            "train_skip/reason": "oom",
+                            "train_skip/oom_skipped": oom_skipped,
+                            "train_skip/nan_skipped": nan_skipped,
+                            "train_skip/consecutive_nan_skipped": consecutive_nan_skipped,
+                            "train_skip/epoch": epoch + 1,
+                            "train_skip/step_idx": step_idx,
+                            "train_skip/global_step": global_step,
+                        },
+                    )
 
             epoch_loss = running_loss / max(running_count, 1)
             wandb_payload = {
@@ -1574,66 +2761,25 @@ def main() -> None:
                 "train_epoch/examples": running_count,
                 "train_epoch/lr": optimizer.param_groups[0]["lr"],
                 "train_epoch/oom_skipped": oom_skipped,
+                "train_epoch/nan_skipped": nan_skipped,
+                "train_epoch/global_step": global_step,
             }
             if slat_cross_attn_params:
                 wandb_payload["train_epoch/slat_lr"] = optimizer.param_groups[1]["lr"]
-            wandb_log(wandb_run, wandb_payload, step=epoch + 1)
+            wandb_log(wandb_run, wandb_payload)
 
-            # Periodic eval against the pre-baked eval feature cache.
-            if args.eval_every and (epoch + 1) % args.eval_every == 0 and eval_heldout_cache:
-                eval_metrics = evaluate_and_record(
-                    pipeline,
-                    scale_head,
-                    scale_decoder,
-                    eval_feature_cache,
-                    eval_heldout_cache,
-                    args.metrics_output,
-                    wandb_run,
-                    epoch + 1,
-                )
-                heldout_metrics = eval_metrics.get("heldout")
-                if heldout_metrics is not None:
-                    heldout_mean_abs_pct = heldout_metrics["mean_abs_pct"]
-                    if heldout_mean_abs_pct < best_heldout_mean_abs_pct:
-                        best_heldout_mean_abs_pct = heldout_mean_abs_pct
-                        best_metrics = heldout_metrics
-                        save_metric_checkpoint(
-                            best_output,
-                            scale_head,
-                            scale_decoder,
-                            args,
-                            epoch + 1,
-                            heldout_metrics,
-                            slat_backbone=slat_backbone,
-                        )
-                        print(
-                            f"Saved best checkpoint to {best_output} "
-                            f"(epoch={epoch + 1}, heldout_mean_abs_pct={heldout_mean_abs_pct:.2f})"
-                        )
-                        wandb_log(
-                            wandb_run,
-                            {
-                                "best/epoch": epoch + 1,
-                                "best/heldout_mean_abs_pct": heldout_mean_abs_pct,
-                                "best/checkpoint_path": best_output,
-                            },
-                            step=epoch + 1,
-                        )
+            # End-of-epoch live eval against held-out examples (always the full
+            # set). Re-runs SS/SLAT so metrics reflect current cross-attn weights.
+            if args.eval_every and (epoch + 1) % args.eval_every == 0:
+                _heldout_eval_and_save(epoch + 1, None, None)
 
-            if recovery_output and args.checkpoint_every and (epoch + 1) % args.checkpoint_every == 0:
-                save_metric_checkpoint(
-                    recovery_output,
-                    scale_head,
-                    scale_decoder,
-                    args,
-                    epoch + 1,
-                    slat_backbone=slat_backbone,
-                )
-                print(f"Saved recovery checkpoint to {recovery_output} (epoch={epoch + 1})")
+            if args.checkpoint_every and (epoch + 1) % args.checkpoint_every == 0:
+                _save_recovery(epoch + 1)
 
     output_path = Path(args.output)
     save_metric_checkpoint(
-        str(output_path), scale_head, scale_decoder, args, slat_backbone=slat_backbone
+        str(output_path), scale_head, scale_decoder, args, slat_backbone=slat_backbone,
+        ss_decoder=pipeline.models.get("ss_decoder") if args.unfreeze_ss_decoder else None,
     )
     print(f"Saved metric scale checkpoint to {output_path}")
     has_cache = args.cache_latents or args.load_feature_cache
