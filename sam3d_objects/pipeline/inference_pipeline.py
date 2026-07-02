@@ -49,7 +49,6 @@ from sam3d_objects.model.io import (
 )
 
 from sam3d_objects.model.backbone.tdfy_dit.modules import sparse as sp
-from sam3d_objects.model.backbone.tdfy_dit.utils import postprocessing_utils
 from safetensors.torch import load_file
 
 
@@ -543,7 +542,13 @@ class InferencePipeline:
         logger.info(
             f"Postprocessing mesh with option with_mesh_postprocess {with_mesh_postprocess}, with_texture_baking {with_texture_baking}..."
         )
-        if "mesh" in outputs:
+        if "mesh" in outputs and "gaussian" in outputs:
+            # to_glb needs both mesh + gaussian; if only mesh was decoded (e.g.
+            # decode_formats=["mesh"] in the metric-depth eval baseline), skip
+            # this step and leave glb=None — the raw MeshExtractResult is still
+            # available in outputs["mesh"] for rasterisation.
+            from sam3d_objects.model.backbone.tdfy_dit.utils import postprocessing_utils
+
             glb = postprocessing_utils.to_glb(
                 outputs["gaussian"][0],
                 outputs["mesh"][0],
@@ -645,7 +650,8 @@ class InferencePipeline:
         return condition_args, condition_kwargs
 
     def sample_sparse_structure(
-        self, ss_input_dict: dict, inference_steps=None, use_distillation=False
+        self, ss_input_dict: dict, inference_steps=None, use_distillation=False,
+        with_grad: bool = False,
     ):
         ss_generator = self.models["ss_generator"]
         ss_decoder = self.models["ss_decoder"]
@@ -673,7 +679,11 @@ class InferencePipeline:
             ss_generator.reverse_fn.strength_pm,
         )
 
-        with torch.no_grad():
+        # with_grad=True is required to train the unfrozen MoT (collect_ss_backbone_params):
+        # the pose modality outputs (scale/translation/rotation) then carry grad back to the
+        # backbone. coords (argwhere) stay discrete regardless — only used as a stopgrad proxy.
+        grad_ctx = torch.enable_grad() if with_grad else torch.no_grad()
+        with grad_ctx:
             with torch.autocast(device_type="cuda", dtype=self.shape_model_dtype):
                 if self.is_mm_dit():
                     latent_shape_dict = {

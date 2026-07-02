@@ -563,6 +563,9 @@ def pose_decoder(
             "translation": pose_instance_dict["instance_position_l2c"].squeeze(0),
             "rotation": pose_instance_dict["instance_quaternion_l2c"].squeeze(0),
             "scale": pose_instance_dict["instance_scale_l2c"].squeeze(0).mean(-1, keepdim=True).expand(1,3),
+            # Per-axis metric scale (W,H,D source for joint MoT metric training). Additive: the
+            # iso "scale" above is unchanged, so all existing inference readers are unaffected.
+            "scale_per_axis": pose_instance_dict["instance_scale_l2c"].squeeze(0),
         }
 
     return decode

@@ -446,6 +446,11 @@ class InferencePipelinePointMap(InferencePipeline):
             # We could probably use the decoder from the models themselves
             pointmap_scale = ss_input_dict.get("pointmap_scale", None)
             pointmap_shift = ss_input_dict.get("pointmap_shift", None)
+            # Capture the SS generator's raw `scale` modality readout (log-SSI) BEFORE
+            # the pose decoder's output overwrites ss_return_dict["scale"] with the
+            # decoded metric scale — MetricScaleHead was trained on the raw readout
+            # (matches finetune_metric_scale.predict_log_dims, which never pose-decodes).
+            ss_scale_features_raw = extract_ss_scale_features(ss_return_dict)
             ss_return_dict.update(
                 self.pose_decoder(
                     ss_return_dict,
@@ -479,10 +484,9 @@ class InferencePipelinePointMap(InferencePipeline):
             # it absorbs full-image + cropped DINOv2 + pointmap context via the
             # SS condition embedder.  Pose-related SS outputs are intentionally
             # excluded — they describe object placement, not size.
-            ss_scale_features = extract_ss_scale_features(ss_return_dict)
             scale_token = self._compute_scale_token(
                 ss_return_dict.get("shape"),
-                ss_scale_features,
+                ss_scale_features_raw,
                 ss_input_dict.get("pointmap_scale"),
                 ss_input_dict.get("pointmap_shift"),
             )
@@ -494,16 +498,23 @@ class InferencePipelinePointMap(InferencePipeline):
             orig_external_emb = None
             slat_backbone = None
             if scale_token is not None:
+                # Layer-norm the token for SLAT injection ONLY, matching training
+                # (finetune_metric_scale.compute_metric_scale_prediction): the raw head
+                # output magnitude is unconstrained and saturates bf16 cross-attention,
+                # drowning the image conditioning. The decoder still gets the raw token.
+                token_for_cond = torch.nn.functional.layer_norm(
+                    scale_token, [scale_token.shape[-1]]
+                )
                 slat_backbone = self._get_slat_backbone()
                 if slat_backbone is not None:
                     orig_backbone_emb = slat_backbone.condition_embedder
                     slat_backbone.condition_embedder = _ScaleAugmentedEmbedderProxy(
-                        orig_backbone_emb, scale_token
+                        orig_backbone_emb, token_for_cond
                     )
                 orig_external_emb = self.condition_embedders.get("slat_condition_embedder")
                 if orig_external_emb is not None:
                     self.condition_embedders["slat_condition_embedder"] = _ScaleAugmentedEmbedderProxy(
-                        orig_external_emb, scale_token
+                        orig_external_emb, token_for_cond
                     )
 
             try:
@@ -581,8 +592,11 @@ class InferencePipelinePointMap(InferencePipeline):
             return {
                 **ss_return_dict,
                 **outputs,
-                "pointmap": pts.cpu().permute((1, 2, 0)),  # HxWx3
+                "pointmap": pts.cpu().permute((1, 2, 0)),          # HxWx3 (downsampled)
+                "pointmap_full": pointmap.cpu().permute((1, 2, 0)), # HxWx3 (full-res, raw MoGe output)
                 "pointmap_colors": pts_colors.cpu().permute((1, 2, 0)),  # HxWx3
+                "intrinsics": pointmap_dict["intrinsics"],  # [3,3] normalized — needed by sam3d_baseline
+                "pointmap_scale": ss_input_dict.get("pointmap_scale"),  # scalar, normalization factor
             }
 
     @staticmethod
@@ -656,6 +670,19 @@ class InferencePipelinePointMap(InferencePipeline):
         self.metric_scale_decoder.load_state_dict(checkpoint["metric_scale_decoder"], strict=False)
         self.metric_scale_head.to(self.device).eval()
         self.metric_scale_decoder.to(self.device).eval()
+        # Joint-MoT checkpoints carry the trained SS generator backbone (pose/scale heads +
+        # geometry) — restore it so the metric W,H,D + translation come from the trained MoT.
+        if "ss_backbone" in checkpoint:
+            try:
+                ss_bb = self.models["ss_generator"].reverse_fn.backbone
+                missing = ss_bb.load_state_dict(checkpoint["ss_backbone"], strict=False)
+                ss_bb.to(self.device).eval()
+                logger.info(
+                    f"Restored joint-MoT SS backbone from {checkpoint_path} "
+                    f"(missing={len(missing.missing_keys)}, unexpected={len(missing.unexpected_keys)})"
+                )
+            except (AttributeError, KeyError) as exc:
+                logger.warning(f"Could not restore ss_backbone: {exc}")
         logger.info(f"Loaded metric scale checkpoint from {checkpoint_path}")
 
     def _get_slat_backbone(self):

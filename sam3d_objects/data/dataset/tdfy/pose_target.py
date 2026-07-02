@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 import torch
 from typing import Dict, Optional, Tuple, Any
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
 from loguru import logger
 
 from sam3d_objects.data.utils import expand_as_right, tree_tensor_map
@@ -769,7 +769,10 @@ class PoseTargetConverter:
         normalize = kwargs.pop("normalize", False)
         pose_target = PoseTarget(**kwargs)
         instance_pose = PoseTargetConverter.pose_target_to_instance_pose(pose_target, normalize)
-        return asdict(instance_pose)
+        # Shallow dict (not asdict): InstancePose holds only tensors, so this is equivalent to
+        # asdict but WITHOUT its recursive deepcopy — which raises on grad-tracking tensors
+        # (needed for the differentiable MoT pose path; harmless for inference).
+        return {f.name: getattr(instance_pose, f.name) for f in fields(instance_pose)}
 
 
 class LogScaleShiftNormalizer:

@@ -21,12 +21,75 @@ This loader emits one record per object instance:
 from __future__ import annotations
 
 import json
+import math
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
+
+
+# Default: drop boxes whose max dimension is >5x or <1/5x their category median
+# (in log-size). Catches gross GT-annotation errors — e.g. Objectron labels one
+# 3D box per AR video sequence, and a few `cup` sequences carry a degenerate box
+# (max 41m vs the 12.6cm category median) repeated across every frame, which
+# poisons training via the GT-normalized size loss. log(5) leaves all plausible
+# within-category variation untouched (verified: it drops only the 27 outlier
+# cups, no legitimate objects).
+DEFAULT_SIZE_OUTLIER_LOG_TOL = math.log(5.0)
+
+
+def size_metric_max(metric_dims) -> float:
+    """Largest box dimension in metres (the iso scale), robust to list/array."""
+    return float(np.asarray(metric_dims, dtype=np.float64).max())
+
+
+def filter_size_outliers(
+    records: list[dict],
+    tol_log: float = DEFAULT_SIZE_OUTLIER_LOG_TOL,
+    dims_key: str = "metric_dims",
+    category_key: str = "category",
+    verbose: bool = True,
+) -> tuple[list[dict], dict[str, int]]:
+    """
+    Drop records whose max GT dimension deviates from their category's median
+    log-size by more than ``tol_log``. Returns (kept_records, dropped_per_category).
+
+    Per-category median is computed from the records themselves, so this is
+    self-calibrating and source-agnostic. Categories are evaluated independently;
+    a category with <3 records is left untouched (too few to estimate a median).
+    """
+    if tol_log is None or not records:
+        return records, {}
+
+    log_by_cat: dict[str, list[float]] = defaultdict(list)
+    for r in records:
+        log_by_cat[r[category_key]].append(math.log(max(size_metric_max(r[dims_key]), 1e-6)))
+    median_log = {
+        c: float(np.median(v)) for c, v in log_by_cat.items() if len(v) >= 3
+    }
+
+    kept: list[dict] = []
+    dropped: dict[str, int] = defaultdict(int)
+    for r in records:
+        cat = r[category_key]
+        if cat in median_log:
+            dev = abs(math.log(max(size_metric_max(r[dims_key]), 1e-6)) - median_log[cat])
+            if dev > tol_log:
+                dropped[cat] += 1
+                continue
+        kept.append(r)
+
+    if verbose and dropped:
+        total = sum(dropped.values())
+        detail = ", ".join(f"{c}={n}" for c, n in sorted(dropped.items()))
+        print(
+            f"size-outlier filter (tol=±{tol_log:.3f} log, ~{math.exp(tol_log):.1f}x): "
+            f"dropped {total} of {len(records)} records [{detail}]"
+        )
+    return kept, dict(dropped)
 
 
 @dataclass(frozen=True)
@@ -91,6 +154,7 @@ class OmniNOCSObjectDataset(Dataset):
         max_records: int | None = None,
         max_records_per_source: int | None = None,
         skip_missing_rgb: bool = True,
+        size_outlier_log_tol: float | None = DEFAULT_SIZE_OUTLIER_LOG_TOL,
     ):
         self.omninocs_root = Path(omninocs_root)
         self.sources = sources or ["nocs_real275"]
@@ -157,6 +221,10 @@ class OmniNOCSObjectDataset(Dataset):
                             "object_id": int(obj["object_id"]),
                             "category": obj["category"],
                             "metric_dims": obj["size"],
+                            # GT object-centre translation (camera frame, metres) + rotation —
+                            # for the joint-MoT translation loss (the mAP lever). 9DoF box.
+                            "translation": obj.get("translation"),
+                            "rotation": obj.get("rotation"),
                             "uid": (
                                 f"{source}_{image_name.replace('/', '_')}_"
                                 f"{int(obj['object_id'])}"
@@ -168,6 +236,9 @@ class OmniNOCSObjectDataset(Dataset):
                         break
                 if max_records is not None and len(records) >= max_records:
                     break
+
+        if size_outlier_log_tol is not None:
+            records, _ = filter_size_outliers(records, tol_log=size_outlier_log_tol)
 
         self.records = records
         if not self.records:
@@ -195,6 +266,11 @@ class OmniNOCSObjectDataset(Dataset):
         return {
             "image": rgba,
             "metric_dims": np.array(rec["metric_dims"], dtype=np.float32),
+            "translation": np.array(
+                rec["translation"] if rec.get("translation") is not None else [0.0, 0.0, 0.0],
+                dtype=np.float32,
+            ),
+            "has_translation": rec.get("translation") is not None,
             "category": rec["category"],
             "uid": rec["uid"],
             "source": rec["source"],

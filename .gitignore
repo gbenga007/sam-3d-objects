@@ -6,3 +6,17 @@ __pycache__
 artifacts/metric_scale/feature_caches/
 artifacts/metric_scale/**/*.cache.pt
 artifacts/metric_scale/**/*_cache.pt
+
+# Model checkpoints and bulky eval outputs (GitHub 100MB limit; keep on Ceph)
+artifacts/metric_scale/checkpoints/*.pt
+artifacts/metric_scale/moge2_pointmaps/
+artifacts/metric_scale/moge2_pointmaps_smoke/
+artifacts/metric_scale/ss_shape_cache_25/
+artifacts/error_analysis_joint_mot/
+artifacts/eval_depth/
+wandb/
+.ipynb_checkpoints/
+
+# Reference papers and personal files (not source)
+/*.pdf
+/Gbenga_photo.png

@@ -19,9 +19,22 @@ import random
 import open3d as o3d
 from scipy.ndimage import label, binary_dilation, binary_fill_holes, binary_erosion, minimum_filter
 import copy
-from sam3d_objects.model.backbone.tdfy_dit.renderers.gaussian_render import GaussianRenderer
 from loguru import logger
-from utils3d.numpy import depth_edge
+try:
+    from utils3d.numpy import depth_edge
+except ImportError:
+    def depth_edge(depth, rtol=0.02, mask=None):
+        raise RuntimeError(
+            "utils3d.numpy.depth_edge is not available in this installation. "
+            "Install the correct commit of utils3d."
+        )
+
+try:
+    from sam3d_objects.model.backbone.tdfy_dit.renderers.gaussian_render import GaussianRenderer
+except ModuleNotFoundError as exc:
+    if exc.name != "gsplat":
+        raise
+    GaussianRenderer = None
 
 def remove_small_regions(mask, min_area=100):
     """
@@ -583,6 +596,11 @@ def get_gs_mask_renderer(Mask, min_size, Intrinsics, device, backend="gsplat"):
     Setup GS renderer for mask rendering.
     Forces square rendering (H=W) to work with unmodified gaussian_render.py.
     """
+    if GaussianRenderer is None:
+        raise RuntimeError(
+            "GaussianRenderer requires gsplat, which is not installed in this environment."
+        )
+
     # Use exact same mask resize code as get_mask_renderer
     orig_h, orig_w = Mask.shape[-2:]
     min_orig_size = min(orig_w, orig_h)

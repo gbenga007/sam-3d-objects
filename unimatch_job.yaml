@@ -37,8 +37,29 @@ spec:
             # Install deps not in the baked image
             pip install --no-cache-dir accelerate
 
+            # The -core image ships torch 2.4.1+cu121 but is STRIPPED of the
+            # repo's runtime deps (hydra, loguru, etc.). Install them all in one
+            # shot, EXCLUDING the torch ecosystem: torch/torchvision aren't even
+            # pinned here (installed via a special CUDA index), and reinstalling
+            # torchaudio (+cu121, needs that index) or xformers can break the
+            # baked attention backend. hydra-core==1.3.2 comes from requirements.
+            grep -vE '^(torch|torchaudio|torchvision|xformers|flash-attn|flash_attn)([=<>!~ ]|$)' requirements.txt > /tmp/reqs_core.txt
+            pip install --no-cache-dir -r /tmp/reqs_core.txt
+
+            # Git deps pinned to the exact known-good commits (--no-deps so they
+            # cannot drag in a different torch). utils3d MUST be 94d1037 or the
+            # newer submodule rename breaks MoGe.
+            pip install --no-cache-dir --no-deps \
+              'git+https://github.com/EasternJournalist/utils3d.git@94d1037aabbce32dea9c07a7c4849525817a1615' \
+              'git+https://github.com/microsoft/MoGe.git@a8c37341bc0325ca99b9d57981cc3bb2bd3e255b'
+
             # Ensure the package points to the PVC copy so local edits take effect
             pip install -e . --no-deps
+
+            # Mandatory Hydra patch (upstream issue #2863). Without it the
+            # pipeline fails at config-compose time. Idempotent — just overwrites
+            # hydra/core/utils.py with the patched version.
+            python patching/hydra
 
             # Environment
             export LIDRA_SKIP_INIT=1
