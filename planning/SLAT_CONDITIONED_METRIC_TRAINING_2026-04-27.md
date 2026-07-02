@@ -244,10 +244,41 @@ unconditional pass should not see any conditioning. No action needed.
 
 ---
 
+## Outcomes (updated 2026-05-17)
+
+v1 NaN'd cross_attn at step 1 (slat-lr=1e-5 too high for fp16). v2 fixed with
+slat-lr=1e-6, 500-step warmup, fp32 cross_attn+norm2. v2 ep2: **1.93% MAPE**.
+v3 continued from v2_best.pt through epoch 5: ep3=2.92%, ep4=5.77% (transient spike),
+ep5=**1.74% MAPE**. Per-category ep5: bottle 2.66%, bowl 2.98%,
+camera 0.75%, can 1.21%, cup 1.52%, laptop 1.14%. Mean cm error: 0.23cm.
+
+**ss_ratio_v1** (active, ep8/10): adds SS decoder unfreeze + aspect-ratio loss.
+Trajectory: ep1=2.06%, ep2=1.54%, ep3=2.02%, ep4=1.59%, ep5=1.30%, ep6=**1.23%** (best), ep7=1.46%.
+ep6 per-category: bottle=0.67%, can=0.67%, camera=0.68%, cup=1.21%, bowl=1.99%, laptop=1.86%.
+
+Best checkpoint (overall): `artifacts/metric_scale/checkpoints/nocs_sceneholdout_ss_ratio_v1_best.pt` (1.23% ep6)
+
+Eval script: `scripts/eval_metric_scale.py` — run on 64 held-out samples (record split).
+Best checkpoint: `artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v2_best.pt`
+
+Known limitation: mesh aspect ratio (H, D) diverges from metric head predictions —
+this is a SLAT shape quality issue, not a scale issue. Addressed in next phase
+(depth reprojection loss). See `/mnt/source/.claude/memory/project_aspect_ratio.md`.
+
 ## Next Steps After This Run
 
-1. Compare MAPE against the frozen-SLAT baselines.
-2. Ablate: metric token injection without cross-attn unfreeze (pure injection into frozen model).
-3. Add mesh-supervised dataset (ShapeNet / Objaverse) to evaluate geometry quality improvement.
-4. Visualise predicted vs. ground-truth bounding boxes.
-5. Consider gradually unfreezing adaLN_modulation if cross-attn alone is insufficient.
+1. ~~Compare MAPE against the frozen-SLAT baselines.~~ **Done**: v2 1.93% beats 2.997%.
+2. ~~Address mesh aspect ratio.~~ **In progress**: ss_ratio_v1 (adds SS decoder + ratio loss);
+   ep6 = **1.23% MAPE** (new best, 28% improvement over 1.51% baseline). Mesh bbox eval pending after completion.
+3. ~~Ablate: metric token injection without cross-attn unfreeze.~~ (deprioritised — mixed dataset next)
+4. **Mixed dataset training (Phase 3a, code ready 2026-05-17)**:
+   - Sampling: Option C — `--max-records-per-source 30000 --balanced-sampling` (1:1:1 WeightedRandomSampler)
+   - 6 epochs targeting ~5 passes per training record (textbook SGD convergence)
+   - Per-source heldouts: 64 NOCS + 200 Objectron + 200 ARKit
+   - Warm-start: `nocs_sceneholdout_ss_ratio_v1_best.pt`
+   - Code shipped to `sam3d_objects/training/finetune_metric_scale.py` (not yet committed)
+   - **Blocker**: only 6,358 of 120,479 Objectron records have local RGB (every-100-frame subsample).
+     Pending decision: drop Objectron / selective-download ~18 GB / gcsfs streaming.
+   - Phase 3b: Add Hypersim at 0.25× weight if more category coverage needed (deferred)
+5. Visualise predicted vs. ground-truth bounding boxes (still pending).
+6. Consider unfreezing adaLN_modulation if mixed training is still insufficient.

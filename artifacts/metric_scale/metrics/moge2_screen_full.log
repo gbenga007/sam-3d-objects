@@ -1,0 +1,123 @@
+/opt/conda/envs/sam3d/lib/python3.11/site-packages/torch/cuda/__init__.py:58: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Loading MoGe-2 ViT-L ...
+MoGe-2 loaded.
+[  1] bottle   gt_scale=0.433 moge2=0.534 ratio=1.233
+[  2] bottle   gt_scale=0.351 moge2=0.350 ratio=0.998
+[  3] laptop   gt_scale=0.475 moge2=0.554 ratio=1.168
+[  4] bowl     gt_scale=0.338 moge2=0.403 ratio=1.191
+[  5] can      gt_scale=0.355 moge2=0.420 ratio=1.183
+[  6] laptop   gt_scale=0.424 moge2=0.457 ratio=1.078
+[  7] bowl     gt_scale=0.294 moge2=0.350 ratio=1.189
+[  8] cup      gt_scale=0.499 moge2=0.550 ratio=1.103
+[  9] cup      gt_scale=0.309 moge2=0.354 ratio=1.145
+[ 10] cup      gt_scale=0.389 moge2=0.449 ratio=1.155
+[ 11] can      gt_scale=0.476 moge2=0.532 ratio=1.117
+[ 12] can      gt_scale=0.285 moge2=0.340 ratio=1.192
+[ 13] can      gt_scale=0.439 moge2=0.466 ratio=1.060
+[ 14] laptop   gt_scale=0.271 moge2=0.301 ratio=1.113
+[ 15] laptop   gt_scale=0.449 moge2=0.461 ratio=1.025
+[ 16] bottle   gt_scale=0.471 moge2=0.515 ratio=1.094
+[ 17] laptop   gt_scale=0.369 moge2=0.402 ratio=1.092
+[ 18] camera   gt_scale=0.302 moge2=0.353 ratio=1.168
+[ 19] cup      gt_scale=0.329 moge2=0.380 ratio=1.155
+[ 20] camera   gt_scale=0.506 moge2=0.496 ratio=0.980
+[ 21] bowl     gt_scale=0.256 moge2=0.297 ratio=1.162
+[ 22] cup      gt_scale=0.444 moge2=0.472 ratio=1.064
+[ 23] cup      gt_scale=0.596 moge2=0.744 ratio=1.247
+[ 24] camera   gt_scale=0.389 moge2=0.456 ratio=1.172
+[ 25] cup      gt_scale=0.521 moge2=0.577 ratio=1.107
+[ 26] bottle   gt_scale=0.368 moge2=0.391 ratio=1.064
+[ 27] bowl     gt_scale=0.447 moge2=0.450 ratio=1.006
+[ 28] camera   gt_scale=0.371 moge2=0.381 ratio=1.026
+[ 29] cup      gt_scale=0.360 moge2=0.362 ratio=1.006
+[ 30] can      gt_scale=0.331 moge2=0.387 ratio=1.168
+[ 31] bottle   gt_scale=0.454 moge2=0.492 ratio=1.083
+[ 32] can      gt_scale=0.353 moge2=0.426 ratio=1.207
+[ 33] can      gt_scale=0.318 moge2=0.368 ratio=1.157
+[ 34] cup      gt_scale=0.368 moge2=0.365 ratio=0.992
+[ 35] cup      gt_scale=0.557 moge2=0.626 ratio=1.123
+[ 36] cup      gt_scale=0.552 moge2=0.562 ratio=1.019
+[ 37] laptop   gt_scale=0.476 moge2=0.467 ratio=0.982
+[ 38] camera   gt_scale=0.406 moge2=0.470 ratio=1.158
+[ 39] laptop   gt_scale=0.379 moge2=0.417 ratio=1.099
+[ 40] laptop   gt_scale=0.466 moge2=0.478 ratio=1.025
+[ 41] camera   gt_scale=0.406 moge2=0.433 ratio=1.067
+[ 42] laptop   gt_scale=0.400 moge2=0.413 ratio=1.033
+[ 43] camera   gt_scale=0.345 moge2=0.419 ratio=1.215
+[ 44] camera   gt_scale=0.547 moge2=0.566 ratio=1.034
+[ 45] cup      gt_scale=0.426 moge2=0.546 ratio=1.282
+[ 46] bowl     gt_scale=0.318 moge2=0.391 ratio=1.232
+[ 47] can      gt_scale=0.473 moge2=0.504 ratio=1.066
+[ 48] camera   gt_scale=0.431 moge2=0.421 ratio=0.978
+[ 49] bowl     gt_scale=0.402 moge2=0.469 ratio=1.165
+[ 50] laptop   gt_scale=0.428 moge2=0.410 ratio=0.958
+[ 51] cup      gt_scale=0.507 moge2=0.552 ratio=1.088
+[ 52] laptop   gt_scale=0.323 moge2=0.408 ratio=1.264
+[ 53] can      gt_scale=0.285 moge2=0.307 ratio=1.077
+[ 54] laptop   gt_scale=0.338 moge2=0.376 ratio=1.113
+[ 55] bottle   gt_scale=0.340 moge2=0.340 ratio=0.999
+[ 56] cup      gt_scale=0.388 moge2=0.372 ratio=0.960
+[ 57] laptop   gt_scale=0.487 moge2=0.595 ratio=1.223
+[ 58] bottle   gt_scale=0.463 moge2=0.450 ratio=0.972
+[ 59] camera   gt_scale=0.383 moge2=0.400 ratio=1.044
+[ 60] cup      gt_scale=0.535 moge2=0.590 ratio=1.103
+[ 61] bottle   gt_scale=0.588 moge2=0.563 ratio=0.957
+[ 62] bowl     gt_scale=0.348 moge2=0.370 ratio=1.062
+[ 63] laptop   gt_scale=0.308 moge2=0.335 ratio=1.086
+[ 64] laptop   gt_scale=0.423 moge2=0.392 ratio=0.926
+[ 65] bottle   gt_scale=0.461 moge2=0.480 ratio=1.040
+[ 66] can      gt_scale=0.431 moge2=0.515 ratio=1.197
+[ 67] bowl     gt_scale=0.436 moge2=0.491 ratio=1.126
+[ 68] cup      gt_scale=0.590 moge2=0.733 ratio=1.242
+[ 69] can      gt_scale=0.530 moge2=0.569 ratio=1.073
+[ 70] bowl     gt_scale=0.336 moge2=0.351 ratio=1.045
+[ 71] camera   gt_scale=0.409 moge2=0.486 ratio=1.187
+[ 72] can      gt_scale=0.377 moge2=0.449 ratio=1.192
+[ 73] can      gt_scale=0.380 moge2=0.465 ratio=1.224
+[ 74] camera   gt_scale=0.513 moge2=0.449 ratio=0.874
+[ 75] bowl     gt_scale=0.409 moge2=0.417 ratio=1.019
+[ 76] cup      gt_scale=0.481 moge2=0.477 ratio=0.992
+[ 77] camera   gt_scale=0.402 moge2=0.473 ratio=1.176
+[ 78] camera   gt_scale=0.391 moge2=0.483 ratio=1.234
+[ 79] laptop   gt_scale=0.506 moge2=0.488 ratio=0.965
+[ 80] camera   gt_scale=0.355 moge2=0.309 ratio=0.870
+[ 81] can      gt_scale=0.425 moge2=0.558 ratio=1.312
+[ 82] cup      gt_scale=0.459 moge2=0.435 ratio=0.949
+[ 83] bowl     gt_scale=0.427 moge2=0.476 ratio=1.114
+[ 84] bottle   gt_scale=0.343 moge2=0.344 ratio=1.001
+[ 85] cup      gt_scale=0.425 moge2=0.490 ratio=1.152
+[ 86] can      gt_scale=0.347 moge2=0.372 ratio=1.072
+[ 87] camera   gt_scale=0.314 moge2=0.291 ratio=0.926
+[ 88] cup      gt_scale=0.386 moge2=0.407 ratio=1.054
+[ 89] bowl     gt_scale=0.290 moge2=0.322 ratio=1.110
+[ 90] bottle   gt_scale=0.506 moge2=0.455 ratio=0.899
+[ 91] laptop   gt_scale=0.319 moge2=0.341 ratio=1.068
+[ 92] can      gt_scale=0.367 moge2=0.470 ratio=1.283
+[ 93] laptop   gt_scale=0.371 moge2=0.394 ratio=1.062
+[ 94] bowl     gt_scale=0.511 moge2=0.551 ratio=1.077
+[ 95] cup      gt_scale=0.520 moge2=0.552 ratio=1.063
+[ 96] camera   gt_scale=0.399 moge2=0.465 ratio=1.166
+[ 97] camera   gt_scale=0.405 moge2=0.398 ratio=0.984
+[ 98] can      gt_scale=0.373 moge2=0.369 ratio=0.989
+[ 99] camera   gt_scale=0.354 moge2=0.360 ratio=1.016
+[100] camera   gt_scale=0.364 moge2=0.386 ratio=1.061
+
+=== MoGe-2 / GT pointmap_scale ratio  (n=100) ===
+median=1.080  mean=1.090  std=0.097
+log-ratio std (systematicity; small => globally calibratable)=0.089
+implied |ratio-1| median=9.0%  mean=10.7%
+  after global-scalar correction: median=7.2%  mean=7.3%
+
+per-category median ratio:
+  bottle     n= 11  median=1.001  mean=1.031
+  bowl       n= 13  median=1.114  mean=1.115
+  camera     n= 20  median=1.052  mean=1.067
+  can        n= 17  median=1.168  mean=1.151
+  cup        n= 21  median=1.103  mean=1.095
+  laptop     n= 18  median=1.073  mean=1.071
+
+log(ratio) vs log(gt_iso) Pearson r=-0.092  (neg => over-measures SMALL objects, as depth-bridge found)
+log(gt_scale) vs log(gt_iso) Pearson r=-0.121  (how well the scene anchor tracks object size)
+
+wrote artifacts/metric_scale/metrics/moge2_vs_gt_pointmap_scale_screen.jsonl

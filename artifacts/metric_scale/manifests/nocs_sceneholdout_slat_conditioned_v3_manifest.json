@@ -1,0 +1,159 @@
+{
+  "args": {
+    "annotations_root": "/mnt/source/datasets_sam3d/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": null,
+    "batch_size": 1,
+    "best_output": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v3_best.pt",
+    "cache_latents": false,
+    "cache_only": false,
+    "categories": null,
+    "checkpoint_every": 1,
+    "compile_model": false,
+    "config": "checkpoints/hf/pipeline.yaml",
+    "dataset": "omninocs-nocs-real275",
+    "device": "cuda",
+    "epochs": 5,
+    "eval_every": 1,
+    "eval_only": false,
+    "fp32_slat_cross_attn": true,
+    "heldout_samples": 64,
+    "hypersim_rgb_root": null,
+    "inject_scale_token_into_slat": true,
+    "load_checkpoint": null,
+    "load_feature_cache": null,
+    "log_step_every": 1,
+    "lr": 0.0001,
+    "manifest_output": "artifacts/metric_scale/manifests/nocs_sceneholdout_slat_conditioned_v3_manifest.json",
+    "max_consecutive_nan_skips": 50,
+    "max_records": null,
+    "max_records_per_source": null,
+    "metrics_output": "artifacts/metric_scale/metrics/nocs_sceneholdout_slat_conditioned_v3_eval.jsonl",
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": null,
+    "omninocs_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275"
+    ],
+    "output": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v3.pt",
+    "overfit_samples": 0,
+    "p_uncond_scale_token": 0.1,
+    "resume_from": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v2_best.pt",
+    "rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS/real_test",
+    "save_feature_cache": null,
+    "seed": 0,
+    "shuffle_split": false,
+    "skip_missing_rgb": true,
+    "slat_lr": 1e-06,
+    "slat_lr_warmup_steps": 0,
+    "split": "train",
+    "split_group": "record",
+    "stage1_steps": 4,
+    "stage2_steps": 1,
+    "unfreeze_slat_cross_attn": true,
+    "validate_manifest": null,
+    "wandb": false,
+    "wandb_entity": null,
+    "wandb_mode": null,
+    "wandb_project": "sam3d-metric-scale",
+    "wandb_run_name": "nocs_sceneholdout_slat_conditioned_v3",
+    "wandb_tags": null,
+    "weight_decay": 0.0001
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v3_best.pt",
+      "sha256": "750fe9793881f69b295b01819204bf71e15e91d284d54cabd24f1793ef4f077f",
+      "size_bytes": 404001453
+    },
+    "checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v3.pt",
+      "sha256": "5405f982664244c1bbd9c733dbc65de1689ad3e9554767c9cfd590c35166b6d1",
+      "size_bytes": 403999694
+    },
+    "feature_cache": null,
+    "metrics_output": {
+      "exists": true,
+      "path": "artifacts/metric_scale/metrics/nocs_sceneholdout_slat_conditioned_v3_eval.jsonl",
+      "sha256": "a2d78bf381eb4447484ce7b7e5cda0cc8e77d9068c4ce2bd85c57b8f09f69d01",
+      "size_bytes": 2684
+    }
+  },
+  "best_metrics": {
+    "axis_mean_abs_cm": [
+      0.24611978232860565,
+      0.21763041615486145,
+      0.23057356476783752
+    ],
+    "axis_mean_abs_pct": [
+      1.58458910882473,
+      1.7344476655125618,
+      1.90078467130661
+    ],
+    "category_mean_abs_cm": {
+      "bottle": 0.29783737659454346,
+      "bowl": 0.3652966022491455,
+      "camera": 0.0829906240105629,
+      "can": 0.12195797264575958,
+      "cup": 0.155620738863945,
+      "laptop": 0.3381465673446655
+    },
+    "category_mean_abs_pct": {
+      "bottle": 2.6632918044924736,
+      "bowl": 2.9795246198773384,
+      "camera": 0.75411731377244,
+      "can": 1.210762932896614,
+      "cup": 1.5164966695010662,
+      "laptop": 1.1424068361520767
+    },
+    "loss": 0.0004093435709364712,
+    "mean_abs_cm": 0.23144125938415527,
+    "mean_abs_pct": 1.739940419793129,
+    "median_abs_cm": 0.1050509512424469,
+    "median_abs_pct": 0.9503781795501709,
+    "source_mean_abs_cm": {
+      "omninocs_nocs": 0.23144125938415527
+    },
+    "source_mean_abs_pct": {
+      "omninocs_nocs": 1.739940233528614
+    }
+  },
+  "dataset": {
+    "annotations_root": "/mnt/source/datasets_sam3d/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": null,
+    "categories": null,
+    "dataset": "omninocs-nocs-real275",
+    "hypersim_rgb_root": null,
+    "max_records": null,
+    "max_records_per_source": null,
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": null,
+    "omninocs_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275"
+    ],
+    "rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS/real_test",
+    "skip_missing_rgb": true,
+    "split": "train"
+  },
+  "feature_schema": {
+    "heldout": {},
+    "train": {}
+  },
+  "manifest_version": 1,
+  "script": "sam3d_objects/training/finetune_metric_scale.py",
+  "split": {
+    "heldout_categories": {},
+    "heldout_count": 0,
+    "heldout_scenes": {},
+    "heldout_sources": {},
+    "seed": 0,
+    "shuffle_split": false,
+    "split_group": "record",
+    "train_categories": {},
+    "train_count": 0,
+    "train_scenes": {},
+    "train_sources": {}
+  }
+}

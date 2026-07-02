@@ -180,30 +180,77 @@ backbone — significantly more compute and data than Phase 1.
 | M4 — Fine-tuning converges, MAPE < 15% on val | **Complete** | baseline_v2: **2.997%** MAPE (ep200, scene-heldout) |
 | M4b — SLAT-conditioned training | **Complete** | v3: **1.74% MAPE** ep5; v2: 1.93% ep2 |
 | M4c — SS decoder + ratio loss | **In progress** | ss_ratio_v1 ep6: **1.23% MAPE** (new best, beats 1.51% baseline by 28%); ep8/10 in progress |
-| M4d — Mixed dataset (Objectron + ARKitScenes) | **In progress** | mixed_v1 launched 2026-05-18 (NOCS+Obj+ARKit, 76K records, 1:1:1 balanced, ~16 days runtime) |
-| M5 — OOD evaluation on WildRGB-D | Not started | |
-| M6 — Phase 2 geometric fidelity begins | Not started | |
+| M4d — Mixed dataset (Objectron + ARKitScenes) | **In progress** | mixed_v1 ep2/6 best; ep3 regressed (Obj 35→90%), ep2 is paper checkpoint |
+| M5 — Metric depth eval pipeline (HAMMER/iBims/DIODE) | **In progress** | Pipeline working 2026-05-27; HAMMER eval running (~454 samples). MoGe baseline adapter written. |
+| M6 — OOD evaluation on WildRGB-D | Not started | |
+| M7 — Phase 2 geometric fidelity begins | Not started | |
 
 ---
 
-## Current Best Result (updated 2026-05-21)
+## ⚠️ Checkpoint Bug — Discovered 2026-05-21
 
-**NOCS-only best:** `nocs_sceneholdout_ss_ratio_v1_best.pt` — epoch 6/10, **1.23% MAPE (0.20 cm MAE)**
+**Problem:** Any training run with `--unfreeze-ss-decoder` fine-tunes the SS decoder, but the
+checkpoint save code did not include the SS decoder state dict. The MetricScaleHead is trained
+on fine-tuned SS features; at inference the original SS decoder is loaded → distribution mismatch.
+
+**Impact:**
+- `nocs_sceneholdout_ss_ratio_v1_best.pt`: **training-eval MAPE 1.23%** is NOT reproducible at
+  inference. Full-pipeline notebook eval shows **38.29% MAPE**. SS decoder weights permanently lost.
+- `mixed_v1` epoch-1 checkpoint will also be broken (process loaded old code, can't be hot-patched).
+  Epochs 2–6 will be correct after process restart with fixed code.
+
+**Fix applied:** `finetune_metric_scale.py` — `save_metric_checkpoint` and `load_metric_checkpoint`
+now accept `ss_decoder=` param. All 4 save call sites and 1 load call site updated to pass
+`pipeline.models.get("ss_decoder") if args.unfreeze_ss_decoder else None`.
+
+**For the paper:** The honest headline number from a properly-saved checkpoint is TBD.
+`slat_conditioned_v3_best.pt` (no SS decoder fine-tuning) is valid: 5.78% full-pipeline MAPE.
+Need to retrain ss_ratio_v1 with fixed code to get the true end-to-end number.
+
+---
+
+## Current Best Result (updated 2026-05-27)
+
+**NOCS-only best (broken):** `nocs_sceneholdout_ss_ratio_v1_best.pt` — epoch 6/10, **1.23% MAPE (training)**
+→ 38.29% full-pipeline MAPE due to checkpoint bug (SS decoder not saved). **Unusable for paper.**
+
+**NOCS-only best (valid):** `nocs_sceneholdout_slat_conditioned_v3_best.pt` — epoch 5/5, **5.78% MAPE full-pipeline**
+
+**Mixed-data paper checkpoint:** `mixed_v1_best.pt` — epoch 2/6
+- NOCS: 4.72%, Objectron: 35.38%, ARKitScenes: 40.18%, overall: 34.89%
 
 | Run | Epochs | Best MAPE | Per-category highlights |
 |---|---|---|---|
 | baseline_v2 (frozen SLAT) | 200 | 0.64% | Long training; no SLAT injection |
 | slat_conditioned_v2 | 2 | 1.93% | First stable SLAT injection |
-| slat_conditioned_v3 | 5 | 1.74% | ep4 spike then recovery |
-| **ss_ratio_v1** | **6** | **1.23%** | bottle=0.67%, can=0.67%, camera=0.68%, cup=1.21%, bowl=1.99%, laptop=1.86% |
+| slat_conditioned_v3 | 5 | **5.78% (full-pipeline)** | 1.74% training eval; valid for paper |
+| **mixed_v1** (paper) | ep2 best | **34.89% overall (full)** | NOCS 4.72%, Obj 35.38%, ARKit 40.18% |
 
-ss_ratio_v1 killed at ep10 mid-epoch; ep6 is the keeper. Epochs 7–9 regressed (1.46–1.69%).
-
-**Active: mixed_v1** — epoch 1/6, step ~36K/75K, loss=0.098, A10 24GB.
-Pre-training baselines: NOCS 5.01%, Objectron 87.0%, ARKitScenes 80.2%. Epoch-1 checkpoint ~29h away.
+**Active: mixed_v1 training** — epoch 4/6 running on training pod (A100 24GB, separate from this eval pod).
 
 **Paper writing started 2026-05-19** — 4 of 6 sections drafted at `gbenga007/eccv-paper-vigir`.
-Target venue: MUSTCV workshop at ECCV 2026. Abstract pending epoch-1 mixed_v1 results.
+Target venue: MUSTCV workshop at ECCV 2026. Abstract pending mixed_v1 final epoch results.
+
+---
+
+## Metric Depth Benchmark Eval (started 2026-05-27)
+
+**Strategy:** Use MoGe pointmap + our MetricScaleDecoder scale prediction.
+- MoGe provides affine-invariant pointmap (correct local shape, unknown scale+shift)
+- Our decoder predicts `s_iso = max(W,H,D)` in metres
+- We rescale MoGe pointmap by `s_iso/moge_extent` (object-centroid-preserving)
+- Evaluated on: HAMMER (454 samples), iBims-1 (759), DIODE (2558)
+
+**Key finding (smoke test):** On HAMMER large objects (40%+ of image = furniture-scale):
+- `depth_metric` rel~0.96 (bad — our scale head predicts ~0.16m for furniture)
+- `depth_scale_invariant` rel~0.10 (good — MoGe shape quality)
+- `local_points` rel~0.16 (good — local geometry quality)
+
+**Status:**
+- HAMMER full eval running: `artifacts/eval_depth/HAMMER_sam3d_v3_best.jsonl` (~90min remaining)
+- MoGe baseline adapter: `scripts/moge_baseline.py` (written, not yet run)
+- Mixed_v1_best eval: queued after HAMMER completes
+- iBims-1, DIODE: queued after HAMMER completes
 
 ---
 

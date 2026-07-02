@@ -1,0 +1,293 @@
+{
+  "args": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": null,
+    "batch_size": 1,
+    "best_output": null,
+    "cache_latents": false,
+    "cache_only": false,
+    "categories": null,
+    "checkpoint_every": 0,
+    "compile_model": false,
+    "config": "checkpoints/hf/pipeline.yaml",
+    "dataset": "omninocs-nocs-real275",
+    "device": "cuda",
+    "epochs": 200,
+    "eval_every": 5,
+    "eval_feature_cache": null,
+    "eval_only": false,
+    "heldout_samples": 0,
+    "hypersim_rgb_root": null,
+    "inject_scale_token_into_slat": false,
+    "load_checkpoint": null,
+    "load_feature_cache": "/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt",
+    "lr": 0.0001,
+    "manifest_output": "artifacts/metric_scale/manifests/nocs_sceneholdout_1024dim_baseline_v2_manifest.json",
+    "max_records": null,
+    "max_records_per_source": null,
+    "metrics_output": "artifacts/metric_scale/metrics/nocs_sceneholdout_1024dim_baseline_v2_eval.jsonl",
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": null,
+    "omninocs_root": "/mnt/dest/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275"
+    ],
+    "output": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_1024dim_baseline_v2.pt",
+    "overfit_samples": 10,
+    "resume_from": null,
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "save_feature_cache": null,
+    "seed": 0,
+    "shuffle_split": false,
+    "skip_missing_rgb": true,
+    "slat_lr": 1e-05,
+    "split": "train",
+    "split_group": "record",
+    "stage1_steps": null,
+    "stage2_steps": null,
+    "unfreeze_slat_cross_attn": false,
+    "validate_manifest": null,
+    "wandb": true,
+    "wandb_entity": "reformed-tulip",
+    "wandb_mode": "online",
+    "wandb_project": "sam3d-metric-scale",
+    "wandb_run_name": "nocs_sceneholdout_1024dim_baseline_v2",
+    "wandb_tags": null,
+    "weight_decay": 0.0001
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_1024dim_baseline_v2_best.pt",
+      "sha256": "ad1571f88e9e565204b1635bb88612ad10cc928b68c9d7102ed4ef7da2d6b84d",
+      "size_bytes": 685365
+    },
+    "checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_1024dim_baseline_v2.pt",
+      "sha256": "b3b7898ed911140e5f19a479452458471573302a7c7dc515426b126aede89cdf",
+      "size_bytes": 684689
+    },
+    "feature_cache": {
+      "exists": true,
+      "path": "/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt",
+      "size_bytes": 13269527441
+    },
+    "metrics_output": {
+      "exists": true,
+      "path": "artifacts/metric_scale/metrics/nocs_sceneholdout_1024dim_baseline_v2_eval.jsonl",
+      "sha256": "d7f18d18f31feee176a465ac301b384608764aba151f2e5c6e2c15f968b1105c",
+      "size_bytes": 66602
+    }
+  },
+  "best_metrics": {
+    "axis_mean_abs_cm": [
+      0.6127780079841614,
+      0.44135579466819763,
+      0.375620573759079
+    ],
+    "axis_mean_abs_pct": [
+      2.921563573181629,
+      2.749692089855671,
+      3.320494666695595
+    ],
+    "category_mean_abs_cm": {
+      "bowl": 0.5422403216362,
+      "can": 0.07918375730514526,
+      "cup": 0.20527233183383942,
+      "laptop": 1.2852996587753296
+    },
+    "category_mean_abs_pct": {
+      "bowl": 4.509471356868744,
+      "can": 0.9931059554219246,
+      "cup": 1.9858190789818764,
+      "laptop": 3.9998136460781097
+    },
+    "loss": 0.0014317883178591728,
+    "mean_abs_cm": 0.4765847325325012,
+    "mean_abs_pct": 2.997250109910965,
+    "median_abs_cm": 0.1561678946018219,
+    "median_abs_pct": 1.3653598725795746,
+    "source_mean_abs_cm": {
+      "unknown": 0.4765847623348236
+    },
+    "source_mean_abs_pct": {
+      "unknown": 2.997250109910965
+    }
+  },
+  "dataset": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": null,
+    "categories": null,
+    "dataset": "omninocs-nocs-real275",
+    "hypersim_rgb_root": null,
+    "max_records": null,
+    "max_records_per_source": null,
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": null,
+    "omninocs_root": "/mnt/dest/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275"
+    ],
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "skip_missing_rgb": true,
+    "split": "train"
+  },
+  "feature_schema": {
+    "heldout": {
+      "batch_indices": {
+        "dtype": "torch.int32",
+        "shape": [
+          13026
+        ],
+        "type": "tensor"
+      },
+      "category": {
+        "type": "str"
+      },
+      "image_name": {
+        "type": "str"
+      },
+      "metric_dims": {
+        "dtype": "torch.float32",
+        "shape": [
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_scale": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_shift": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "shape": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          4096,
+          8
+        ],
+        "type": "tensor"
+      },
+      "slat_feats": {
+        "dtype": "torch.float32",
+        "shape": [
+          13026,
+          8
+        ],
+        "type": "tensor"
+      },
+      "uid": {
+        "type": "str"
+      }
+    },
+    "train": {
+      "batch_indices": {
+        "dtype": "torch.int32",
+        "shape": [
+          26643
+        ],
+        "type": "tensor"
+      },
+      "category": {
+        "type": "str"
+      },
+      "image_name": {
+        "type": "str"
+      },
+      "metric_dims": {
+        "dtype": "torch.float32",
+        "shape": [
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_scale": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "pointmap_shift": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          3
+        ],
+        "type": "tensor"
+      },
+      "shape": {
+        "dtype": "torch.float32",
+        "shape": [
+          1,
+          4096,
+          8
+        ],
+        "type": "tensor"
+      },
+      "slat_feats": {
+        "dtype": "torch.float32",
+        "shape": [
+          26643,
+          8
+        ],
+        "type": "tensor"
+      },
+      "uid": {
+        "type": "str"
+      }
+    }
+  },
+  "manifest_version": 1,
+  "script": "sam3d_objects/training/finetune_metric_scale.py",
+  "split": {
+    "heldout_categories": {
+      "bowl": 1076,
+      "can": 538,
+      "cup": 1076,
+      "laptop": 538
+    },
+    "heldout_count": 3228,
+    "heldout_scenes": {
+      "scene_6": 3228
+    },
+    "heldout_sources": {
+      "unknown": 3228
+    },
+    "seed": 0,
+    "shuffle_split": false,
+    "split_group": "record",
+    "train_categories": {
+      "bottle": 2757,
+      "bowl": 1294,
+      "camera": 2669,
+      "can": 2183,
+      "cup": 1763,
+      "laptop": 2216
+    },
+    "train_count": 12882,
+    "train_scenes": {
+      "scene_1": 1720,
+      "scene_2": 2435,
+      "scene_3": 2964,
+      "scene_4": 3045,
+      "scene_5": 2718
+    },
+    "train_sources": {
+      "unknown": 12882
+    }
+  }
+}

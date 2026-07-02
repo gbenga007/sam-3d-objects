@@ -1,0 +1,186 @@
+{
+  "args": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "balanced_sampling": true,
+    "batch_size": 1,
+    "best_output": "artifacts/metric_scale/checkpoints/mixed_scratch_smoke_best.pt",
+    "cache_latents": false,
+    "cache_only": false,
+    "categories": null,
+    "checkpoint_every": 1,
+    "checkpoint_every_steps": 100,
+    "compile_model": false,
+    "config": "checkpoints/hf/pipeline.yaml",
+    "dataset": "omninocs-mixed",
+    "device": "cuda",
+    "epochs": 1,
+    "eval_every": 1,
+    "eval_every_steps": 150,
+    "eval_only": false,
+    "eval_steps_max_samples": 24,
+    "fp32_slat_cross_attn": true,
+    "heldout_per_source": "nocs_real275:16,objectron:16,arkitscenes:16",
+    "heldout_samples": 0,
+    "hypersim_rgb_root": null,
+    "inject_scale_token_into_slat": true,
+    "load_checkpoint": null,
+    "load_feature_cache": null,
+    "log_step_every": 1,
+    "lr": 0.0001,
+    "manifest_output": "artifacts/metric_scale/manifests/mixed_scratch_smoke_manifest.json",
+    "max_consecutive_nan_skips": 50,
+    "max_records": null,
+    "max_records_per_source": 160,
+    "metrics_output": "artifacts/metric_scale/metrics/mixed_scratch_smoke_eval.jsonl",
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275",
+      "objectron",
+      "arkitscenes"
+    ],
+    "output": "artifacts/metric_scale/checkpoints/mixed_scratch_smoke.pt",
+    "overfit_samples": 0,
+    "p_uncond_scale_token": 0.1,
+    "resume_from": null,
+    "rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS/real_test",
+    "save_feature_cache": null,
+    "seed": 0,
+    "shuffle_split": false,
+    "skip_missing_rgb": true,
+    "slat_lr": 1e-06,
+    "slat_lr_warmup_steps": 100,
+    "split": "train",
+    "split_group": "record",
+    "ss_ratio_loss_weight": 0.0,
+    "stage1_steps": 4,
+    "stage2_steps": 1,
+    "unfreeze_slat_cross_attn": true,
+    "unfreeze_ss_decoder": false,
+    "validate_manifest": null,
+    "wandb": false,
+    "wandb_entity": null,
+    "wandb_mode": "disabled",
+    "wandb_project": "sam3d-metric-scale",
+    "wandb_run_name": null,
+    "wandb_tags": null,
+    "weight_decay": 0.0001
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/mixed_scratch_smoke_best.pt",
+      "sha256": "65b496f7288fd6542807ee06b159041896a65527c1e93edbf90bb670b3597618",
+      "size_bytes": 403998103
+    },
+    "checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/mixed_scratch_smoke.pt",
+      "sha256": "85c58e6957fd2bbfe86693aa7467aaa2f022f4a3fcf62f704abc3ad8b0d148b0",
+      "size_bytes": 403996024
+    },
+    "feature_cache": null,
+    "metrics_output": {
+      "exists": true,
+      "path": "artifacts/metric_scale/metrics/mixed_scratch_smoke_eval.jsonl",
+      "sha256": "75b2cb7434d196d7ba7daa310277a126cfb33d93952f804e5ab16857b13026a1",
+      "size_bytes": 14454
+    }
+  },
+  "best_metrics": {
+    "axis_mean_abs_cm": [
+      21.45106315612793,
+      26.34387969970703,
+      29.73724365234375
+    ],
+    "axis_mean_abs_pct": [
+      49.47753846645355,
+      57.79942870140076,
+      94.27717328071594
+    ],
+    "category_mean_abs_cm": {
+      "bed": 120.05001068115234,
+      "bottle": 2.842501640319824,
+      "bowl": 9.100341796875,
+      "cabinet": 83.80204010009766,
+      "camera": 6.292238712310791,
+      "can": 4.895297527313232,
+      "chair": 50.823604583740234,
+      "cup": 7.305662155151367,
+      "laptop": 14.688897132873535,
+      "oven": 47.51359176635742,
+      "shelves": 66.48703002929688,
+      "television": 36.30986022949219
+    },
+    "category_mean_abs_pct": {
+      "bed": 79.31960225105286,
+      "bottle": 24.985632300376892,
+      "bowl": 77.85835266113281,
+      "cabinet": 83.07226896286011,
+      "camera": 64.4909679889679,
+      "can": 60.36853790283203,
+      "chair": 76.9988477230072,
+      "cup": 73.0259656906128,
+      "laptop": 52.84941792488098,
+      "oven": 76.3337790966034,
+      "shelves": 84.18849110603333,
+      "television": 89.62252140045166
+    },
+    "loss": 0.5086055994033813,
+    "mean_abs_cm": 25.84406280517578,
+    "mean_abs_pct": 67.18471646308899,
+    "median_abs_cm": 8.30356216430664,
+    "median_abs_pct": 69.71989274024963,
+    "source_mean_abs_cm": {
+      "arkitscenes": 69.8268814086914,
+      "nocs_real275": 7.773349285125732,
+      "objectron": 5.42980432510376
+    },
+    "source_mean_abs_pct": {
+      "arkitscenes": 81.80109858512878,
+      "nocs_real275": 66.96546077728271,
+      "objectron": 54.614633321762085
+    }
+  },
+  "dataset": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "categories": null,
+    "dataset": "omninocs-mixed",
+    "hypersim_rgb_root": null,
+    "max_records": null,
+    "max_records_per_source": 160,
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275",
+      "objectron",
+      "arkitscenes"
+    ],
+    "rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS/real_test",
+    "skip_missing_rgb": true,
+    "split": "train"
+  },
+  "feature_schema": {
+    "heldout": {},
+    "train": {}
+  },
+  "manifest_version": 1,
+  "script": "sam3d_objects/training/finetune_metric_scale.py",
+  "split": {
+    "heldout_categories": {},
+    "heldout_count": 0,
+    "heldout_scenes": {},
+    "heldout_sources": {},
+    "seed": 0,
+    "shuffle_split": false,
+    "split_group": "record",
+    "train_categories": {},
+    "train_count": 0,
+    "train_scenes": {},
+    "train_sources": {}
+  }
+}

@@ -148,3 +148,13 @@ contribution either way.
   needed frames (586 videos, extract-and-delete, `datasets_sam3d/ARKitScenes_depth/`;
   timestamp matching verified 18/18 on first videos). Scripts:
   `scripts/download_objectron_geometry.py`, `scripts/download_arkitscenes_depth.py`.
+- 2026-06-12 (evening): **A/B COMPLETE.** v1a anchor (shared grads) best 27.23 mean / 15.70
+  median @ ep340 (NOCS 7.4 / Obj 26.4 / ARKit 36.7) BEATS v1b factored 28.25 / 15.87 @ ep220
+  (8.3 / 28.3 / 36.9); absolute-head baseline 35.4 / 21.3. ⇒ the gain is the ANCHOR FEATURES,
+  not gradient decoupling; v1a also overfits less (ep1000: 32.2 vs 37.9). Paper takes the
+  pre-registered hedge: v1a = method of record, v1b = the decoupling ablation, diagnostic
+  chain = the contribution. NOCS sits at the oracle floor (7.4 vs 7.7). Remaining gap to the
+  ~15% floor: Objectron size-dependent iso correction (26.4 vs 14.4) + pathological ARKit
+  categories (stove 334%, sink 104% — inspect GT). Next: mask-size + median-depth iso
+  features; per-axis correction (A2); Objectron sparse-cloud target (data on disk);
+  weight-decay tuning; live MoGe-2 + injection run.

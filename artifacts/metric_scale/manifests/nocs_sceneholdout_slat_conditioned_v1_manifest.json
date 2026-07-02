@@ -1,0 +1,151 @@
+{
+  "args": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": null,
+    "batch_size": 1,
+    "best_output": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1_best.pt",
+    "cache_latents": false,
+    "cache_only": false,
+    "categories": null,
+    "checkpoint_every": 1,
+    "compile_model": false,
+    "config": "checkpoints/hf/pipeline.yaml",
+    "dataset": "omninocs-nocs-real275",
+    "device": "cuda",
+    "epochs": 5,
+    "eval_every": 5,
+    "eval_feature_cache": "/tmp/metric_scale_omninocs_sceneholdout_train12890_scene6_cache.pt",
+    "eval_only": false,
+    "heldout_samples": 0,
+    "hypersim_rgb_root": null,
+    "inject_scale_token_into_slat": true,
+    "load_checkpoint": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_1024dim_baseline_v2_best.pt",
+    "load_feature_cache": null,
+    "lr": 0.0001,
+    "manifest_output": "artifacts/metric_scale/manifests/nocs_sceneholdout_slat_conditioned_v1_manifest.json",
+    "max_records": null,
+    "max_records_per_source": null,
+    "metrics_output": "artifacts/metric_scale/metrics/nocs_sceneholdout_slat_conditioned_v1_eval.jsonl",
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": null,
+    "omninocs_root": "/mnt/dest/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275"
+    ],
+    "output": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1.pt",
+    "overfit_samples": 10,
+    "resume_from": null,
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "save_feature_cache": null,
+    "seed": 0,
+    "shuffle_split": false,
+    "skip_missing_rgb": true,
+    "slat_lr": 1e-05,
+    "split": "train",
+    "split_group": "record",
+    "stage1_steps": 4,
+    "stage2_steps": 1,
+    "unfreeze_slat_cross_attn": true,
+    "validate_manifest": null,
+    "wandb": true,
+    "wandb_entity": "reformed-tulip",
+    "wandb_mode": null,
+    "wandb_project": "sam3d-metric-scale",
+    "wandb_run_name": "nocs_sceneholdout_slat_conditioned_v1",
+    "wandb_tags": null,
+    "weight_decay": 0.0001
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1_best.pt",
+      "sha256": "86035796f2e1e9d3a9695aeeecd7b1e4e660b4dec13a04a923d8f559bbb99d4c",
+      "size_bytes": 202479040
+    },
+    "checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/nocs_sceneholdout_slat_conditioned_v1.pt",
+      "sha256": "2659818d73dec56e044edaca08c08421df01c139e6c33bb5ac4851e8ec0bc255",
+      "size_bytes": 202477335
+    },
+    "feature_cache": null,
+    "metrics_output": {
+      "exists": true,
+      "path": "artifacts/metric_scale/metrics/nocs_sceneholdout_slat_conditioned_v1_eval.jsonl",
+      "sha256": "f7808d7a4ef1ed360f7561d074478bdd1d7763319b69023678941dd85a994919",
+      "size_bytes": 9494
+    }
+  },
+  "best_metrics": {
+    "axis_mean_abs_cm": [
+      0.6160374283790588,
+      0.43857431411743164,
+      0.3752022385597229
+    ],
+    "axis_mean_abs_pct": [
+      2.9526617377996445,
+      2.7491483837366104,
+      3.342118486762047
+    ],
+    "category_mean_abs_cm": {
+      "bowl": 0.5455197095870972,
+      "can": 0.08053457736968994,
+      "cup": 0.20559033751487732,
+      "laptop": 1.276873230934143
+    },
+    "category_mean_abs_pct": {
+      "bowl": 4.552881047129631,
+      "can": 1.0359195061028004,
+      "cup": 1.9895926117897034,
+      "laptop": 3.966992348432541
+    },
+    "loss": 0.0014435664052143693,
+    "mean_abs_cm": 0.4766046404838562,
+    "mean_abs_pct": 3.0146433040499687,
+    "median_abs_cm": 0.1588672399520874,
+    "median_abs_pct": 1.3897797092795372,
+    "source_mean_abs_cm": {
+      "unknown": 0.4766046702861786
+    },
+    "source_mean_abs_pct": {
+      "unknown": 3.014642931520939
+    }
+  },
+  "dataset": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": null,
+    "categories": null,
+    "dataset": "omninocs-nocs-real275",
+    "hypersim_rgb_root": null,
+    "max_records": null,
+    "max_records_per_source": null,
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": null,
+    "omninocs_root": "/mnt/dest/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275"
+    ],
+    "rgb_root": "/mnt/dest/OmniNOCS/real_test",
+    "skip_missing_rgb": true,
+    "split": "train"
+  },
+  "feature_schema": {
+    "heldout": {},
+    "train": {}
+  },
+  "manifest_version": 1,
+  "script": "sam3d_objects/training/finetune_metric_scale.py",
+  "split": {
+    "heldout_categories": {},
+    "heldout_count": 0,
+    "heldout_scenes": {},
+    "heldout_sources": {},
+    "seed": 0,
+    "shuffle_split": false,
+    "split_group": "record",
+    "train_categories": {},
+    "train_count": 0,
+    "train_scenes": {},
+    "train_sources": {}
+  }
+}

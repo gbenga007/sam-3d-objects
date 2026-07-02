@@ -20,3 +20,8 @@ wandb/
 # Reference papers and personal files (not source)
 /*.pdf
 /Gbenga_photo.png
+artifacts/metric_scale/eval_slat_conditioned_v2/
+artifacts/metric_scale/eval_slat_conditioned_v2_heldout64/
+artifacts/metric_scale/eval_v2_peraxis/
+artifacts/metric_scale/eval_v3_mesh_bbox/
+notebook/artifacts/

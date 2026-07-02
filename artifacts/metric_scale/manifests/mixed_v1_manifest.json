@@ -1,0 +1,169 @@
+{
+  "args": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "balanced_sampling": true,
+    "batch_size": 1,
+    "best_output": "artifacts/metric_scale/checkpoints/mixed_v1_best.pt",
+    "cache_latents": false,
+    "cache_only": false,
+    "categories": null,
+    "checkpoint_every": 1,
+    "compile_model": false,
+    "config": "checkpoints/hf/pipeline.yaml",
+    "dataset": "omninocs-mixed",
+    "device": "cuda",
+    "epochs": 6,
+    "eval_every": 1,
+    "eval_only": false,
+    "fp32_slat_cross_attn": true,
+    "heldout_per_source": "nocs_real275:64,objectron:200,arkitscenes:200",
+    "heldout_samples": 0,
+    "hypersim_rgb_root": null,
+    "inject_scale_token_into_slat": true,
+    "load_checkpoint": "/tmp/warm_start.pt",
+    "load_feature_cache": null,
+    "log_step_every": 1,
+    "lr": 0.0001,
+    "manifest_output": "artifacts/metric_scale/manifests/mixed_v1_manifest.json",
+    "max_consecutive_nan_skips": 50,
+    "max_records": null,
+    "max_records_per_source": 30000,
+    "metrics_output": "artifacts/metric_scale/metrics/mixed_v1_eval.jsonl",
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275",
+      "objectron",
+      "arkitscenes"
+    ],
+    "output": "artifacts/metric_scale/checkpoints/mixed_v1.pt",
+    "overfit_samples": 0,
+    "p_uncond_scale_token": 0.1,
+    "resume_from": null,
+    "rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS/real_test",
+    "save_feature_cache": null,
+    "seed": 0,
+    "shuffle_split": false,
+    "skip_missing_rgb": true,
+    "slat_lr": 1e-06,
+    "slat_lr_warmup_steps": 500,
+    "split": "train",
+    "split_group": "record",
+    "ss_ratio_loss_weight": 0.05,
+    "stage1_steps": 4,
+    "stage2_steps": 1,
+    "unfreeze_slat_cross_attn": true,
+    "unfreeze_ss_decoder": true,
+    "validate_manifest": null,
+    "wandb": false,
+    "wandb_entity": "reformed-tulip",
+    "wandb_mode": null,
+    "wandb_project": "sam3d-metric-scale",
+    "wandb_run_name": "mixed_v1",
+    "wandb_tags": null,
+    "weight_decay": 0.0001
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/mixed_v1_best.pt",
+      "sha256": "5fcec3cc0acd673d4b2037aa9e7c78c1bc0655b325e0aacc6eadbfa616d06c6f",
+      "size_bytes": 403995334
+    },
+    "checkpoint": {
+      "exists": true,
+      "path": "artifacts/metric_scale/checkpoints/mixed_v1.pt",
+      "sha256": "57340b2c8af6a3fcaca508a56e4c12d9222f164b1b5463eb19898e670de786a4",
+      "size_bytes": 403993575
+    },
+    "feature_cache": null,
+    "metrics_output": {
+      "exists": true,
+      "path": "artifacts/metric_scale/metrics/mixed_v1_eval.jsonl",
+      "sha256": "88d1cf8e59111a3192e328c63d92ab2de62a0fb34ff8940b3763f3d8fdda26dd",
+      "size_bytes": 17800
+    }
+  },
+  "best_metrics": {
+    "axis_mean_abs_cm": [
+      7.093833923339844,
+      15.205267906188965,
+      17.87089729309082
+    ],
+    "axis_mean_abs_pct": [
+      15.024921298027039,
+      19.03417706489563,
+      16.318167746067047
+    ],
+    "category_mean_abs_cm": {
+      "bottle": 0.07056692987680435,
+      "cabinet": 35.765647888183594,
+      "chair": 10.731039047241211,
+      "cup": 0.8991155624389648,
+      "table": 24.748708724975586
+    },
+    "category_mean_abs_pct": {
+      "bottle": 0.8574949577450752,
+      "cabinet": 34.22781527042389,
+      "chair": 16.71236753463745,
+      "cup": 8.847347646951675,
+      "table": 21.85189127922058
+    },
+    "loss": 0.03940236568450928,
+    "mean_abs_cm": 13.389998435974121,
+    "mean_abs_pct": 16.79242104291916,
+    "median_abs_cm": 3.617584705352783,
+    "median_abs_pct": 7.454681396484375,
+    "source_mean_abs_cm": {
+      "arkitscenes": 23.548418045043945,
+      "nocs_real275": 0.1665756106376648,
+      "objectron": 1.217381238937378
+    },
+    "source_mean_abs_pct": {
+      "arkitscenes": 24.746450781822205,
+      "nocs_real275": 1.7299998551607132,
+      "objectron": 11.96976900100708
+    }
+  },
+  "dataset": {
+    "annotations_root": "/mnt/dest/OmniNOCS/omninocs_release_nocs_real275",
+    "arkitscenes_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "categories": null,
+    "dataset": "omninocs-mixed",
+    "hypersim_rgb_root": null,
+    "max_records": null,
+    "max_records_per_source": 30000,
+    "min_mask_pixels": 500,
+    "objectron_rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_root": "/mnt/source/datasets_sam3d/OmniNOCS",
+    "omninocs_sources": [
+      "nocs_real275",
+      "objectron",
+      "arkitscenes"
+    ],
+    "rgb_root": "/mnt/source/datasets_sam3d/OmniNOCS/real_test",
+    "skip_missing_rgb": true,
+    "split": "train"
+  },
+  "feature_schema": {
+    "heldout": {},
+    "train": {}
+  },
+  "manifest_version": 1,
+  "script": "sam3d_objects/training/finetune_metric_scale.py",
+  "split": {
+    "heldout_categories": {},
+    "heldout_count": 0,
+    "heldout_scenes": {},
+    "heldout_sources": {},
+    "seed": 0,
+    "shuffle_split": false,
+    "split_group": "record",
+    "train_categories": {},
+    "train_count": 0,
+    "train_scenes": {},
+    "train_sources": {}
+  }
+}
