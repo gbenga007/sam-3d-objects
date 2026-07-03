@@ -679,7 +679,8 @@ def predict_log_dims(
     gt_dims: torch.Tensor | None = None,
     pointmap: torch.Tensor | None = None,
     unfreeze_layout_for_head: bool = False,
-) -> tuple[torch.Tensor, bool, torch.Tensor]:
+    return_translation: bool = False,
+) -> tuple[torch.Tensor, bool, torch.Tensor, torch.Tensor | None]:
     """
     Run the full SAM3D pipeline and return predicted log-dimensions.
 
@@ -761,6 +762,22 @@ def predict_log_dims(
             ss_scale_features = ss_scale_features.to(pipeline.device)
             if not unfreeze_layout_for_head:
                 ss_scale_features = ss_scale_features.detach()
+
+        # Unified recipe (dims head + joint-MoT translation loss): pose-decode the SAME
+        # gradient-carrying SS sample so compute_translation_loss can train the layout
+        # transformer + translation read-head alongside the metric head. Decoded on a
+        # shallow COPY so the pose output never overwrites the raw `scale` modality the
+        # head consumes (the pipeline.run scale-overwrite bug, fixed 2026-07-02).
+        # Translation is unaffected by downsample_factor (only `scale` is dsf-rescaled).
+        pred_translation = None
+        if return_translation:
+            _pose_out = pipeline.pose_decoder(
+                dict(ss_return_dict),
+                scene_scale=ss_input_dict.get("pointmap_scale"),
+                scene_shift=ss_input_dict.get("pointmap_shift"),
+            )
+            pred_translation = _pose_out.get("translation")
+
         scale_token = scale_head(
             ss_return_dict["shape"].detach(),
             ss_scale_features,
@@ -824,7 +841,7 @@ def predict_log_dims(
             scale_token,
             slat.coords[:, 0],
         )
-        return log_dims, scale_token_dropped, ss_ratio_loss
+        return log_dims, scale_token_dropped, ss_ratio_loss, pred_translation
 
 
 def compute_translation_loss(
@@ -1267,7 +1284,7 @@ def evaluate_live_dataset(
                         )
                         log_pred = _pm["log_dims"]
                     else:
-                        log_pred, _, _ratio = predict_log_dims(
+                        log_pred, _, _ratio, _ = predict_log_dims(
                             pipeline,
                             scale_head,
                             scale_decoder,
@@ -3216,7 +3233,7 @@ def main() -> None:
                                 dropped = False
                                 ratio_loss = torch.zeros((), device=pipeline.device)
                             else:
-                                log_pred, dropped, ratio_loss = predict_log_dims(
+                                log_pred, dropped, ratio_loss, pred_translation = predict_log_dims(
                                     pipeline,
                                     scale_head,
                                     scale_decoder,
@@ -3235,6 +3252,10 @@ def main() -> None:
                                     ),
                                     unfreeze_layout_for_head=getattr(
                                         args, "unfreeze_ss_layout_for_head", False
+                                    ),
+                                    return_translation=(
+                                        args.trans_loss_weight > 0
+                                        and getattr(args, "unfreeze_ss_layout_for_head", False)
                                     ),
                                 )
                         except (IndexError, RuntimeError) as pipe_err:

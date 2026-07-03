@@ -149,7 +149,8 @@ def mesh_verts(out):
     return None
 
 
-def predict_box(pipeline, rgb, mask, pointmap, seed, use_head_dims=True):
+def predict_box(pipeline, rgb, mask, pointmap, seed, use_head_dims=True,
+                layout_postprocess=False):
     """Run pipeline -> predicted oriented box in gt_RT frame: (pred_RT 4x4, pred_scales 3).
     use_head_dims=False: ignore the (possibly random/untrained) MetricScaleHead and use the
     pose-decoder size (mesh_ext x out['scale']) — required for joint-MoT ckpts where the head
@@ -157,8 +158,12 @@ def predict_box(pipeline, rgb, mask, pointmap, seed, use_head_dims=True):
     mask_u8 = (mask.astype(np.uint8) * 255)[..., None]
     rgba = np.concatenate([rgb[..., :3], mask_u8], axis=-1)
     out = pipeline.run(
-        rgba, None, seed, stage1_only=False, with_mesh_postprocess=False,
-        with_texture_baking=False, with_layout_postprocess=False, use_vertex_color=True,
+        rgba, None, seed, stage1_only=False,
+        # layout post-optimization (ICP against the pointmap) needs a glb, which
+        # requires the mesh postprocess path; texture baking stays off for speed.
+        with_mesh_postprocess=layout_postprocess,
+        with_texture_baking=False,
+        with_layout_postprocess=layout_postprocess, use_vertex_color=True,
         stage1_inference_steps=None, pointmap=pointmap, decode_formats=["mesh"],
     )
     R = quaternion_to_matrix(out["rotation"].float())[0].cpu().numpy()      # [3,3]
@@ -196,6 +201,9 @@ def main():
                     help="trained metric-scale ckpt -> size from out['metric_dimensions'] (the user's method)")
     ap.add_argument("--pointmap", choices=["gt", "none", "moge2"], default="gt",
                     help="gt = GT-depth metric pointmap; none = MoGe-v1 internal; moge2 = live MoGe-2 (deploy)")
+    ap.add_argument("--layout-postprocess", action="store_true",
+                    help="enable the pipeline's layout post-optimization (ICP against the "
+                         "pointmap) before reading the box — the untested mAP@50 lever")
     args = ap.parse_args()
 
     out_dir = os.path.join(REPO, args.out_dir)
@@ -266,7 +274,8 @@ def main():
             elif pipeline is not None:
                 try:
                     RT, sc, cc = predict_box(pipeline, rgb, gt_mask[:, :, i], pointmap, args.seed,
-                                             use_head_dims=args.use_head_dims)
+                                             use_head_dims=args.use_head_dims,
+                                             layout_postprocess=args.layout_postprocess)
                 except Exception as e:
                     print(f"[step0.5] {key} FAILED: {type(e).__name__}: {e}", flush=True)
                     ok = False
