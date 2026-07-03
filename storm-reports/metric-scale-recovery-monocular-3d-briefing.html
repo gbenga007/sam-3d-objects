@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Storm Research: Metric Scale Recovery in Monocular 3D Reconstruction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=Roboto+Mono:wght@400;500;600&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --blue: #2563eb; --blue-dark: #1e3a8a; --ink: #16203a; --muted: #5b6677; --line: #e4e9f2;
+    --bg-soft: #f6f8fc; --green: #15803d; --green-bg: #e9f6ee; --amber: #b45309; --amber-bg: #fdf3e7;
+    --slate: #475569; --slate-bg: #eef1f6; --red: #b91c1c; --red-bg: #fdecec;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Roboto', system-ui, sans-serif; color: var(--ink); background: #eef1f6; line-height: 1.62; font-weight: 400; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 900px; margin: 0 auto; background: #fff; padding: 64px 72px 80px; box-shadow: 0 1px 40px rgba(22,32,58,0.08); }
+  .eyebrow { font-family: 'Roboto Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--blue); margin-bottom: 14px; }
+  h1 { font-family: 'Montserrat', sans-serif; font-weight: 800; font-size: 40px; line-height: 1.12; letter-spacing: -0.02em; color: var(--ink); margin-bottom: 18px; }
+  .lede { font-size: 17px; color: var(--muted); max-width: 640px; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 26px; padding-top: 22px; border-top: 2px solid var(--line); font-family: 'Roboto Mono', monospace; font-size: 12px; color: var(--muted); }
+  .meta-row b { color: var(--ink); font-weight: 600; }
+  .verify-banner { margin-top: 22px; background: var(--green-bg); border: 1px solid #bfe3cc; border-radius: 8px; padding: 13px 18px; font-size: 13px; color: #14532d; display: flex; gap: 10px; align-items: baseline; }
+  .verify-banner b { font-weight: 700; }
+  .verify-banner .tag { font-family: 'Roboto Mono', monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; background: var(--green); color: #fff; padding: 3px 8px; border-radius: 4px; flex-shrink: 0; }
+  .howto { margin-top: 18px; border: 1px solid var(--line); border-radius: 8px; padding: 18px 22px; background: var(--bg-soft); }
+  .howto h4 { font-family: 'Roboto Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .howto ul { list-style: none; }
+  .howto li { font-size: 13.5px; color: #2b3950; margin-bottom: 7px; padding-left: 16px; position: relative; }
+  .howto li::before { content: "›"; position: absolute; left: 0; color: var(--blue); font-weight: 700; }
+  .section { margin-top: 56px; }
+  .section-num { font-family: 'Roboto Mono', monospace; font-size: 13px; font-weight: 600; color: var(--blue); letter-spacing: 0.05em; }
+  h2 { font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 25px; letter-spacing: -0.01em; color: var(--ink); margin: 6px 0 18px; line-height: 1.2; }
+  h2 .bar { display: inline-block; width: 38px; height: 4px; background: var(--blue); border-radius: 2px; vertical-align: middle; margin-right: 14px; }
+  p { margin-bottom: 14px; }
+  p.body-lg { font-size: 16.5px; }
+  .ceo { background: var(--bg-soft); border-left: 5px solid var(--blue); padding: 26px 30px; border-radius: 4px; font-size: 16.5px; }
+  .ceo strong { font-weight: 700; color: var(--blue-dark); }
+  .finding { border: 1px solid var(--line); border-radius: 10px; padding: 24px 26px; margin-bottom: 18px; position: relative; }
+  .finding-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
+  .finding-title { font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 18px; line-height: 1.3; color: var(--ink); flex: 1; }
+  .finding-rank { font-family: 'Roboto Mono', monospace; font-weight: 600; font-size: 13px; color: #fff; background: var(--ink); width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .finding p { font-size: 15px; color: #283449; margin-bottom: 14px; }
+  .rel-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .rel { display: inline-flex; align-items: center; gap: 9px; font-family: 'Roboto Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 5px 12px; border-radius: 20px; }
+  .rel.high { background: #e7f0fe; color: var(--blue); }
+  .rel.medhigh { background: var(--green-bg); color: var(--green); }
+  .rel.medium { background: var(--amber-bg); color: var(--amber); }
+  .rel.low { background: var(--red-bg); color: var(--red); }
+  .score { font-family: 'Roboto Mono', monospace; font-size: 13px; font-weight: 600; color: var(--ink); }
+  .score b { font-size: 17px; }
+  .score span { color: var(--muted); font-weight: 400; }
+  .chips { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .chip-row { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; font-size: 13.5px; }
+  .chip-label { font-family: 'Roboto Mono', monospace; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; white-space: nowrap; }
+  .chip-label.sup { background: var(--green-bg); color: var(--green); }
+  .chip-label.chal { background: var(--red-bg); color: var(--red); }
+  .chip-label.fix { background: var(--amber-bg); color: var(--amber); }
+  .chip-row span.who { color: #2b3950; }
+  .chip-row span.who b { font-weight: 600; }
+  .contested { border: 1px dashed var(--amber); background: #fffaf2; border-radius: 10px; padding: 22px 26px; margin-bottom: 18px; }
+  .contested .tag { font-family: 'Roboto Mono', monospace; font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--amber); }
+  .contested h4 { font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 16px; color: var(--ink); margin: 6px 0 10px; }
+  .contested p { font-size: 14px; color: #4a3a22; margin-bottom: 0; }
+  .connection { background: linear-gradient(135deg, #16203a 0%, #1e3a8a 100%); color: #eaf0fb; border-radius: 12px; padding: 34px 38px; }
+  .connection h2 { color: #fff; }
+  .connection h2 .bar { background: #6ea8ff; }
+  .connection .section-num { color: #9ec1ff; }
+  .connection p { color: #d3def3; font-size: 16px; }
+  .connection .punch { font-family: 'Montserrat', sans-serif; font-weight: 600; font-size: 18px; color: #fff; line-height: 1.4; margin-top: 18px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,0.18); }
+  .assume { border: 1px solid var(--line); border-left: 5px solid var(--amber); border-radius: 6px; padding: 24px 28px; background: #fffdf9; }
+  .assume h3 { font-family: 'Montserrat', sans-serif; font-size: 17px; font-weight: 700; color: var(--ink); margin-bottom: 10px; }
+  .assume p { font-size: 15px; color: #3a3320; }
+  .assume p:last-child { margin-bottom: 0; }
+  .action-item { display: flex; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+  .action-item:last-child { border-bottom: none; }
+  .action-mark { font-family: 'Roboto Mono', monospace; font-weight: 600; font-size: 13px; color: var(--blue); flex-shrink: 0; width: 34px; }
+  .action-item .do { font-weight: 600; color: var(--ink); }
+  .action-item p { font-size: 14.5px; margin-bottom: 0; color: #2b3950; }
+  .frontier { border: 2px dashed var(--blue); border-radius: 12px; padding: 30px 34px; background: var(--bg-soft); }
+  .frontier .q { font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: 22px; line-height: 1.32; color: var(--blue-dark); margin-bottom: 16px; }
+  .frontier p { font-size: 15px; color: #2b3950; }
+  .oncam { margin-top: 18px; }
+  .oncam-col { border-radius: 10px; padding: 20px 24px; margin-bottom: 14px; }
+  .oncam-col.safe { background: var(--green-bg); border: 1px solid #bfe3cc; }
+  .oncam-col.caveat { background: var(--amber-bg); border: 1px solid #f0d9b5; }
+  .oncam-col.avoid { background: var(--red-bg); border: 1px solid #f3c9c9; }
+  .oncam-col h4 { font-family: 'Roboto Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px; }
+  .oncam-col.safe h4 { color: var(--green); }
+  .oncam-col.caveat h4 { color: var(--amber); }
+  .oncam-col.avoid h4 { color: var(--red); }
+  .oncam-col ul { list-style: none; }
+  .oncam-col li { font-size: 14px; color: #233; margin-bottom: 8px; padding-left: 16px; position: relative; line-height: 1.5; }
+  .oncam-col li::before { content: "•"; position: absolute; left: 0; font-weight: 700; }
+  .oncam-col.safe li::before { color: var(--green); }
+  .oncam-col.caveat li::before { color: var(--amber); }
+  .oncam-col.avoid li::before { color: var(--red); }
+  .refs { margin-top: 56px; padding-top: 26px; border-top: 2px solid var(--line); }
+  .refs h3 { font-family: 'Roboto Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+  .refs ul { list-style: none; }
+  .refs li { font-size: 12.5px; color: var(--muted); margin-bottom: 11px; padding-left: 16px; position: relative; line-height: 1.5; }
+  .refs li::before { content: "›"; position: absolute; left: 0; color: var(--blue); font-weight: 700; }
+  .refs a { color: #34507e; text-decoration: none; }
+  .refs a:hover { text-decoration: underline; }
+  .refs .vstat { font-family: 'Roboto Mono', monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; margin-right: 6px; }
+  .vstat.ok { background: var(--green-bg); color: var(--green); }
+  .vstat.part { background: var(--amber-bg); color: var(--amber); }
+  .vstat.weak { background: var(--red-bg); color: var(--red); }
+  .footer { margin-top: 40px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: #9aa6b8; text-align: center; }
+  @media (max-width: 640px) { .page { padding: 40px 24px 56px; } h1 { font-size: 30px; } }
+  @media print { body { background: #fff; } .page { box-shadow: none; max-width: 100%; padding: 0; } .connection, .oncam-col { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="eyebrow">Storm Research &middot; v2 (verified)</div>
+    <h1>Metric Scale Recovery in Monocular 3D Reconstruction</h1>
+    <p class="lede">A five-lens synthesis: practitioner, academic, skeptic, economist, and historian. Every claim independently checked against its primary source before publication.</p>
+    <div class="meta-row">
+      <span><b>Date</b> &nbsp;July 3, 2026</span>
+      <span><b>Method</b> &nbsp;5 author-built expert lenses + contradiction map</span>
+      <span><b>Audience</b> &nbsp;a CV researcher positioning a metric-scale paper for submission</span>
+    </div>
+    <div class="verify-banner">
+      <span class="tag">Verified</span>
+      <span>All 20 citations (6 clusters) independently checked against primary sources on July 3, 2026. <b>Result: 0 fabricated, 4 corrected, 2 demoted.</b> Confidence scores reflect post-verification evidence quality.</span>
+    </div>
+    <div class="howto">
+      <h4>How to read this</h4>
+      <ul>
+        <li><b>The panel was author-constructed.</b> All five lenses share one framing, so where they agree, treat it as a strong hypothesis, not independent proof.</li>
+        <li><b>Confidence is scored 1-10</b> on evidence quality: peer-reviewed causal work &gt; official policy/financial data &gt; single commissioned survey &gt; analogy &gt; preprint.</li>
+        <li><b>Measured fact and interpretation are flagged separately.</b> A high score means the data is solid, not that the strategic reading is certain.</li>
+      </ul>
+    </div>
+  </header>
+
+  <!-- ============ 01 CEO SUMMARY ============ -->
+  <section class="section">
+    <div class="section-num">01</div>
+    <h2><span class="bar"></span>The 60-Second Summary</h2>
+    <div class="ceo">
+      <p style="margin-bottom:0;">The settled fact: a single photograph cannot measure absolute size — scale is mathematically unobservable from one image, so every "metric" monocular system imports its units from somewhere else: camera intrinsics, training-set size priors, an IMU, a depth sensor, or a known reference object. What has genuinely changed is that foundation depth models (Metric3D, ZoeDepth, UniDepth, Depth Pro, MoGe-2) now package remarkably good <em>statistical</em> scale priors, so metric output works well where the test scene resembles the training distribution. <strong>The contested question is not whether these models produce metric numbers — it is whether a learned prior that collapses from ~90% to ~30% accuracy off-distribution should be called "measurement" at all.</strong> Practitioners resolve the tension operationally: nobody who needs the number ships raw model scale; production systems anchor it (AR to inertial tracking, robotics to kinematics or stereo, mapping to ground control), and the best recent models (MoGe-2, Depth Pro) themselves decouple scale-free geometry from a separate scale estimate. The economically-fueled "camera-only" narrative and the 170-year engineering record point the same way: the winning designs delegate units to an explicit anchor rather than pretending the image contains them.</p>
+    </div>
+  </section>
+
+  <!-- ============ 02 KEY FINDINGS ============ -->
+  <section class="section">
+    <div class="section-num">02</div>
+    <h2><span class="bar"></span>Five Key Findings, Ranked by Reliability</h2>
+
+    <div class="finding">
+      <div class="finding-head">
+        <div class="finding-title">Absolute scale is always externally referenced — the reference has moved from hardware into data, but it never disappeared</div>
+        <div class="finding-rank">1</div>
+      </div>
+      <div class="rel-row">
+        <div class="rel high">Reliability: High</div>
+        <div class="score"><b>9</b><span>/10</span></div>
+      </div>
+      <p>Single-view metrology has required an in-scene metric reference since it was formalised (Criminisi, Reid &amp; Zisserman, ICCV 1999); photogrammetry has required surveyed ground control for over a century; monocular SLAM adopted IMU fusion specifically because "IMUs add metric scale to the otherwise scale-invariant results" (Visual-Inertial ORB-SLAM, 2016). Modern metric depth models do not escape this: Metric3D's canonical-camera transform is built on known focal length (its released code falls back to guessing among default focal lengths when intrinsics are absent), and MiDaS deliberately chose scale-and-shift-invariant training because metric supervision does not mix across datasets. The learned prior is the newest form of the reference, not its elimination.</p>
+      <div class="chips">
+        <div class="chip-row"><span class="chip-label sup">Supported by</span><span class="who"><b>All five lenses</b> — Criminisi et al. 1999; Mur-Artal &amp; Tard&oacute;s 2016; Metric3D (TPAMI 2024); MiDaS (TPAMI 2020)</span></div>
+        <div class="chip-row"><span class="chip-label chal">Challenged by</span><span class="who">No one</span></div>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head">
+        <div class="finding-title">Zero-shot metric accuracy is a domain lottery: the same model swings from near-perfect to unusable across test sets</div>
+        <div class="finding-rank">2</div>
+      </div>
+      <div class="rel-row">
+        <div class="rel high">Reliability: High</div>
+        <div class="score"><b>8</b><span>/10</span></div>
+      </div>
+      <p>Under Depth Pro's controlled zero-shot metric protocol (ICLR 2025) on unseen datasets, &delta;&#8321; accuracy for leading "metric" models spans enormous ranges — Metric3D v2 roughly 30&rarr;88, UniDepth roughly 17&rarr;96, ZoeDepth roughly 8&rarr;86 — and the paper documents that several systems quietly violate zero-shot conditions (separate indoor/outdoor metric heads; per-domain test-time crop selection). Headline &delta;&#8321;&asymp;0.97 numbers on NYUv2/KITTI are in-domain artifacts, not general capability.</p>
+      <div class="chips">
+        <div class="chip-row"><span class="chip-label sup">Supported by</span><span class="who"><b>Academic</b> (Depth Pro, arXiv:2410.02073), <b>Skeptic</b> (evaluation-protocol critiques), <b>Practitioner</b> (field failure reports)</span></div>
+        <div class="chip-row"><span class="chip-label chal">Challenged by</span><span class="who">No one — though model release pages implicitly contest it by quoting in-domain numbers</span></div>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head">
+        <div class="finding-title">Shape transfers; scale doesn't — and architectures that decouple the two beat those that entangle them</div>
+        <div class="finding-rank">3</div>
+      </div>
+      <div class="rel-row">
+        <div class="rel medhigh">Reliability: Med-High</div>
+        <div class="score"><b>8</b><span>/10</span></div>
+      </div>
+      <p>Relative (scale-invariant) geometry generalises zero-shot; absolute scale regresses toward the training-domain prior. MoGe-2's ablations (Table 4) show that predicting affine-invariant geometry plus a separate low-dimensional global scale head beats direct metric regression — the paper attributes the failure of entangled designs to focal-distance ambiguity and gradient interference. Field reports match: MoGe-2's far-field failure (Arc de Triomphe predicted 18.8&nbsp;m vs actual 44.8&nbsp;m, per MetricScenes) was a scale failure on intact shape, fixed by adding new training data, not new geometry.</p>
+      <div class="chips">
+        <div class="chip-row"><span class="chip-label sup">Supported by</span><span class="who"><b>Academic</b> (MoGe-2, <b>NeurIPS 2025</b> — peer-reviewed), <b>Practitioner</b> (GitHub issue reports, MetricScenes), <b>Historian</b> (MiDaS lineage)</span></div>
+        <div class="chip-row"><span class="chip-label chal">Challenged by</span><span class="who">No one</span></div>
+        <div class="chip-row"><span class="chip-label fix">Corrected</span><span class="who">MoGe-2 upgraded from preprint to NeurIPS 2025 (verified via OpenReview); the informal "~2&times;" field report is the reporter's own uncertain estimate, not a measurement</span></div>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head">
+        <div class="finding-title">Where metric accuracy actually matters, deployed systems anchor scale externally — learned depth is a densifier, not the scale source</div>
+        <div class="finding-rank">4</div>
+      </div>
+      <div class="rel-row">
+        <div class="rel medhigh">Reliability: Med-High</div>
+        <div class="score"><b>7</b><span>/10</span></div>
+      </div>
+      <p>AR frameworks (ARKit/ARCore) recover scale from visual-inertial odometry, where the IMU makes scale observable; robotics manipulation work reports SOTA metric depth failing to generalise to real grasping and adds kinematic anchors (KineDepth: robot-as-measuring-stick, 22% depth-error reduction); drone mapping still mandates ground control points. Even the anchors are imperfect — <b>measured VIO drift is roughly 2.6&ndash;7.9&nbsp;cm per metre of travel (combined, not pure scale) and 4.8&ndash;25.1&nbsp;cm on walk-away-and-return tests</b> — but operators trust an imperfect physical anchor over an unanchored prior. Camera-only purism has repeatedly reverted: Tesla reintroduced radar (HW4, 2023); Apple added LiDAR (2020).</p>
+      <div class="chips">
+        <div class="chip-row"><span class="chip-label sup">Supported by</span><span class="who"><b>Practitioner</b>, <b>Historian</b>, <b>Skeptic</b> — Scargill et al. (arXiv:2109.14757); KineDepth (arXiv:2409.19490); GCP practice</span></div>
+        <div class="chip-row"><span class="chip-label chal">Challenged by</span><span class="who"><b>Economist</b> (partially) — the BOM economics push hard toward removing the anchor hardware</span></div>
+        <div class="chip-row"><span class="chip-label fix">Corrected</span><span class="who">the initially-quoted "~14.4&nbsp;cm/m VIO scale drift" did not survive primary-source check — actual sources support &le;~7.9&nbsp;cm/m combined drift (ARKit, 19&nbsp;m corridor) and ~2.6&nbsp;cm/m (ARCore)</span></div>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head">
+        <div class="finding-title">The "monocular metric works" narrative is economically load-bearing — funded by those who profit from deleting depth sensors</div>
+        <div class="finding-rank">5</div>
+      </div>
+      <div class="rel-row">
+        <div class="rel medium">Reliability: Medium</div>
+        <div class="score"><b>5</b><span>/10</span></div>
+      </div>
+      <p>The research is sponsored almost entirely by platforms that monetise downstream applications on installed RGB cameras (Meta/SAM&nbsp;3D, Microsoft/MoGe, Apple/Depth Pro) or by BOM arbitrage (Tesla's ultrasonic-sensor removal: ~$114/vehicle per a Munro &amp; Associates teardown estimate, never confirmed by Tesla). Spatial-computing bets are underwritten on camera-only 3D understanding: Niantic Spatial was capitalised with $250M (largely Niantic's own balance sheet plus $50M from Scopely, not new outside funding); World Labs has raised $1.23B ($230M in 2024 + $1B in Feb 2026, Autodesk $200M the largest disclosed cheque), with the $5B valuation only Bloomberg-reported <em>talks</em>. This does not falsify the science, but it explains why headline framing consistently outruns the cross-domain evidence — and why the models are free.</p>
+      <div class="chips">
+        <div class="chip-row"><span class="chip-label sup">Supported by</span><span class="who"><b>Economist</b> — Munro teardown via InsideEVs; Niantic announcement; TechCrunch/Bloomberg on World Labs</span></div>
+        <div class="chip-row"><span class="chip-label chal">Challenged by</span><span class="who"><b>Academic</b> implicitly — incentives don't invalidate the peer-reviewed gains that do exist</span></div>
+        <div class="chip-row"><span class="chip-label fix">Corrected</span><span class="who">Tesla figure re-attributed to the Munro analyst estimate; Niantic "$250M funding" re-characterised as internal capitalisation; World Labs $5B marked as reported talks only</span></div>
+      </div>
+    </div>
+
+    <div class="contested">
+      <div class="tag">Contested signal &middot; monitor, do not assert &middot; confidence 3/10</div>
+      <h4>Market-sizing and conversion statistics ("$1.2T spatial computing by 2035", "94% AR conversion lift")</h4>
+      <p>Verification traced the "94%" to a single September 2020 Shopify tweet of internal platform data: it is <em>interaction-conditioned</em> (shoppers who chose to engage with 3D content converted more — self-selection, not causation), has no published methodology, and Shopify's own controlled case studies report 27&ndash;65% lifts. It is routinely misquoted as "products with 3D convert 94% better." The market forecasts are analyst projections (SNS Insider) with undisclosed methodology. Treat both as narrative fuel, not evidence.</p>
+    </div>
+  </section>
+
+  <!-- ============ 03 HIDDEN CONNECTION ============ -->
+  <section class="section">
+    <div class="connection">
+      <div class="section-num">03</div>
+      <h2><span class="bar"></span>The Hidden Connection</h2>
+      <p>On the surface, the lenses disagree about whether learned metric depth is progress (Academic) or a memorisation trick (Skeptic), and whether the camera-only push will win (Economist) or revert to fusion (Historian).</p>
+      <p>But line up what each lens found <em>works</em>, and the same design appears at every layer of the stack: MiDaS and MoGe-2 architecturally split scale-free geometry from a scalar scale estimate; deployed AR splits SLAM geometry from IMU-observed scale; photogrammetry split image geometry from a surveyed baseline for 170 years; and the money splits the same way — shape is commoditised and given away free, while scale is where liability, hardware cost, and product value concentrate.</p>
+      <p class="punch">Every generation of monocular 3D independently rediscovers the same architecture: make geometry scale-free and delegate the units to an explicit anchor. Progress is real, but it is progress in the quality and availability of anchors — not in removing the need for one.</p>
+    </div>
+  </section>
+
+  <!-- ============ 03b MISSING 6TH LENS ============ -->
+  <section class="section">
+    <div class="assume">
+      <h3>The assumption this briefing rests on (and the missing 6th lens)</h3>
+      <p>All five lenses implicitly assumed the question is "how accurate is monocular metric scale?" None asked the metrologist's question: <em>how accurate does it need to be, per application, and who certifies the claim?</em> A furniture-in-room AR preview may tolerate 10% error; a grasp planner millimetres; an autonomy safety case has formal requirements. Without a requirements-and-certification lens, "works" and "fails" are unfalsifiable vibes — and today's benchmarks, built exclusively from prior-conforming scenes, are structurally unable to catch prior failures (a dollhouse kitchen confidently measured as a real kitchen).</p>
+      <p>This is the omission that could invert the findings: if most commercial applications only require prior-level accuracy, the Skeptic's critique is scientifically right and commercially irrelevant — the "frozen tape measure" is good enough for the money that funds it.</p>
+    </div>
+  </section>
+
+  <!-- ============ 04 ACTIONABLE INSIGHT ============ -->
+  <section class="section">
+    <div class="section-num">04</div>
+    <h2><span class="bar"></span>What To Actually Do Differently</h2>
+    <p class="body-lg" style="color:var(--muted);">For a researcher submitting a paper on metric scale in monocular reconstruction — specific positioning and evaluation moves, drawn from where the lenses converge.</p>
+    <div class="action-item">
+      <div class="action-mark">01</div>
+      <div><span class="do">Frame contributions as anchor-delegation and anchor-correction, never as "solving" metric scale.</span><p>Finding 1 is the consensus of the field's own history and its best architectures; reviewers steeped in Criminisi/MiDaS/MoGe-2 will reward the honest frame and punish a "we make monocular 3D metric" claim.</p></div>
+    </div>
+    <div class="action-item">
+      <div class="action-mark">02</div>
+      <div><span class="do">Report scale error decomposed from shape error — it is the experiment the literature is missing.</span><p>The Academic lens found that almost no metric-depth paper separates a global log-scale residual from scale-invariant shape residual, so the field cannot say whether "metric" gains are geometry or prior-guessing. A paper that publishes this decomposition (per-domain, in-distribution vs zero-shot) fills a named gap.</p></div>
+    </div>
+    <div class="action-item">
+      <div class="action-mark">03</div>
+      <div><span class="do">State your intrinsics policy explicitly, and test self-estimated vs supplied focal length.</span><p>Metric claims are conditional on intrinsics handling (Finding 1). Practitioner evidence says supplying ground-truth FOV can <em>hurt</em> models trained on self-estimated intrinsics — if you observe this, report it; it is a publishable calibration finding, not a bug to hide.</p></div>
+    </div>
+    <div class="action-item">
+      <div class="action-mark">04</div>
+      <div><span class="do">Never quote in-domain metric numbers as general capability; adopt a Depth-Pro-style cross-domain protocol.</span><p>Finding 2 shows single-benchmark metric numbers are the field's least trustworthy statistic. Report per-source spreads and disclose any per-domain heads, crops, or tuning — before a reviewer finds them.</p></div>
+    </div>
+    <div class="action-item">
+      <div class="action-mark">05</div>
+      <div><span class="do">Pre-empt the "category-size memoriser" objection in your limitations.</span><p>Acknowledge that prior-conforming benchmarks cannot detect prior failures (the dollhouse test), and where feasible include one prior-violating probe — unusual object sizes, atypical focal lengths — even as a qualitative figure.</p></div>
+    </div>
+    <div class="action-item">
+      <div class="action-mark">06</div>
+      <div><span class="do">Cite the delegation lineage as your intellectual scaffolding.</span><p>Criminisi's reference-height metrology &rarr; photogrammetric ground control &rarr; VIO scale observability &rarr; MiDaS's deliberate scale-invariance &rarr; MoGe-2's decoupled scale head. Positioning your method as the object-level continuation of a 170-year design pattern is stronger than claiming novelty against it.</p></div>
+    </div>
+  </section>
+
+  <!-- ============ 04b CLAIM SAFETY GUIDE ============ -->
+  <section class="section">
+    <div class="section-num">04b</div>
+    <h2><span class="bar"></span>What's Safe to Assert</h2>
+    <div class="oncam">
+      <div class="oncam-col safe">
+        <h4>✓ Safe — verified against primary source</h4>
+        <ul>
+          <li>Metric scale from a single image is ill-posed; systems recover it via intrinsics + learned priors or external anchors (Metric3D TPAMI; Criminisi 1999).</li>
+          <li>Zero-shot metric accuracy varies drastically across domains, and some "zero-shot" systems use per-domain heads or crops (Depth Pro, ICLR 2025).</li>
+          <li>MiDaS deliberately trained scale-and-shift-invariant to enable cross-dataset mixing (Ranftl et al., TPAMI 2020).</li>
+          <li>Monocular SLAM adopted inertial fusion specifically to obtain metric scale (Mur-Artal &amp; Tard&oacute;s, 2016; ORB-SLAM3 2020).</li>
+        </ul>
+      </div>
+      <div class="oncam-col caveat">
+        <h4>⚠ Say with a caveat</h4>
+        <ul>
+          <li>Specific &delta;&#8321; ranges per model — attribute to Depth Pro's protocol and note protocol sensitivity.</li>
+          <li>MoGe-2's decoupled-scale superiority — cite the ablation table, note it is one model family's evidence.</li>
+          <li>GitHub-issue failure cases (2-5&times; scale errors) — real but anecdotal; use as motivation, not measurement.</li>
+          <li>"Supplying GT intrinsics can hurt" — practitioner-observed and mechanism-plausible; verify on your own stack before asserting.</li>
+        </ul>
+      </div>
+      <div class="oncam-col avoid">
+        <h4>✕ Don't assert</h4>
+        <ul>
+          <li>Market forecasts ($1.2T spatial computing) or the "94% AR conversion lift" as facts.</li>
+          <li>That any current model achieves reliable zero-shot metric scale "without priors".</li>
+          <li>Precise valuations/savings figures from secondary press (Tesla $114/vehicle; World Labs $5B talks) without "reportedly".</li>
+          <li>That benchmark agreement proves measurement rather than prior-matching — no current benchmark can distinguish them.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 05 FRONTIER QUESTION ============ -->
+  <section class="section">
+    <div class="section-num">05</div>
+    <h2><span class="bar"></span>The Frontier Question</h2>
+    <div class="frontier">
+      <div class="q">Can any evaluation distinguish measured scale from memorised scale?</div>
+      <p>Every current benchmark is built from prior-conforming scenes, so a model that memorises category sizes and one that genuinely infers scale are indistinguishable on paper. A benchmark of deliberately prior-violating scenes — miniatures, oversized props, unusual optics, decomposed into global-scale vs shape residuals — would settle the Academic-vs-Skeptic contradiction, expose how much of the current metric wave is a frozen tape measure, and define what "metric" is allowed to mean on a spec sheet. No lens addressed it because no one profits from building it: vendors would only lose headline numbers, and academics lack the incentive to attack the benchmarks their results depend on.</p>
+    </div>
+  </section>
+
+  <!-- ============ REFERENCES ============ -->
+  <div class="refs">
+    <h3>Evidence base &middot; verification status</h3>
+    <ul>
+      <li><span class="vstat ok">Confirmed</span> Bochkovskii et al., 2024/2025. "Depth Pro: Sharp Monocular Metric Depth in Less Than a Second." ICLR 2025. Zero-shot metric &delta;&#8321; spreads and protocol violations. <a href="https://arxiv.org/abs/2410.02073">arxiv.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> Yin et al., 2023. "Metric3D: Towards Zero-shot Metric 3D Prediction from a Single Image." ICCV 2023; Metric3D v2 in TPAMI 2024. Canonical camera transform requires focal length. <a href="https://arxiv.org/abs/2307.10984">arxiv.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> Hu et al., 2024. "Metric3D v2." IEEE TPAMI. <a href="https://ieeexplore.ieee.org/document/10638254/">ieeexplore.ieee.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> Bhat et al., 2023. "ZoeDepth: Zero-shot Transfer by Combining Relative and Metric Depth." arXiv preprint (not journal-published). Per-domain metric heads. <a href="https://arxiv.org/abs/2302.12288">arxiv.org</a></li>
+      <li><span class="vstat part">Corrected</span> Wang et al., 2025. "MoGe-2: Accurate Monocular Geometry with Metric Scale and Sharp Details." <b>NeurIPS 2025</b> (upgraded from preprint during verification). Decoupled global-scale head ablations (Table 4). <a href="https://arxiv.org/abs/2507.02546">arxiv.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> Ranftl et al., 2020. "Towards Robust Monocular Depth Estimation" (MiDaS). IEEE TPAMI. Deliberate scale-shift invariance. <a href="https://github.com/isl-org/MiDaS">github.com</a></li>
+      <li><span class="vstat ok">Confirmed</span> Brazil et al., 2023. "Omni3D: A Large Benchmark and Model for 3D Object Detection in the Wild." CVPR 2023. 23.3 AP3D in-domain; KITTI&rarr;nuScenes zero-shot 12.7% (framed by the authors as their best cross-dataset result). <a href="https://arxiv.org/abs/2207.10660">arxiv.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> Criminisi, Reid &amp; Zisserman. "Single View Metrology." ICCV 1999; extended in IJCV 40(2), 2000. Absolute measurement requires "a known reference length" in scene. <a href="https://www.microsoft.com/en-us/research/wp-content/uploads/1999/01/Criminisi_iccv1999.pdf">microsoft.com</a></li>
+      <li><span class="vstat ok">Confirmed</span> Mur-Artal &amp; Tard&oacute;s, 2017. "Visual-Inertial Monocular SLAM with Map Reuse." IEEE RA-L 2(2). IMU initialisation recovers scale; ORB-SLAM3 (T-RO 2021) made VI primary. <a href="https://arxiv.org/abs/1610.05949">arxiv.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> Metric3D GitHub issue #161 — 3-5&times; scale error with calibrated camera. <a href="https://github.com/YvanYin/Metric3D/issues/161">github.com</a></li>
+      <li><span class="vstat ok">Confirmed</span> microsoft/MoGe issue #75 — ~2&times; scale error with measured intrinsics. <a href="https://github.com/microsoft/MoGe/issues/75">github.com</a></li>
+      <li><span class="vstat ok">Confirmed</span> MetricScenes / far-field scale failures (Arc de Triomphe 18.8&nbsp;m vs 44.8&nbsp;m). <a href="https://metricscenes.github.io/">metricscenes.github.io</a></li>
+      <li><span class="vstat ok">Confirmed</span> Depth-Anything V2 issue #152; Depth-Anything-3 issue #81 — metric-variant scale failures. <a href="https://github.com/DepthAnything/Depth-Anything-V2/issues/152">github.com</a></li>
+      <li><span class="vstat part">Corrected</span> Scargill et al., 2021 ("Here To Stay", arXiv:2109.14757) + Wang (Medium, 2020) — walk-away hologram drift 4.8&nbsp;cm (ARCore) vs 25.1&nbsp;cm (ARKit); corridor VIO drift &le;~7.9&nbsp;cm/m combined. <b>The initially-quoted ~14.4&nbsp;cm/m was unsupported and is retracted.</b> <a href="https://arxiv.org/abs/2109.14757">arxiv.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> KineDepth, 2024 — kinematic anchoring for metric depth in manipulation. <a href="https://arxiv.org/pdf/2409.19490">arxiv.org</a></li>
+      <li><span class="vstat ok">Confirmed</span> "Toward A Better Understanding of Monocular Depth Evaluation," 2025 (preprint) — standard metrics severely under-sensitive, specifically to curvature perturbations. <a href="https://arxiv.org/abs/2510.19814">arxiv.org</a></li>
+      <li><span class="vstat part">Corrected</span> Munro &amp; Associates teardown estimate via InsideEVs/Drive Tesla, Oct 2022 — ~$114/vehicle for removed ultrasonic sensors (~$200M/yr derived at ~2M vehicles); analyst estimate, never confirmed by Tesla. <a href="https://insideevs.com/news/614707/tesla-removing-ultrasonic-sensors-vision-only/">insideevs.com</a></li>
+      <li><span class="vstat part">Corrected</span> Niantic, Mar/May 2025 — games business sold to Scopely for $3.5B; Niantic Spatial capitalised with $250M ($200M Niantic balance sheet + $50M Scopely), not new outside funding. <a href="https://nianticlabs.com/news/niantic-next-chapter">nianticlabs.com</a></li>
+      <li><span class="vstat ok">Confirmed</span> World Labs — $230M (Sep 2024) + $1B (Feb 2026; Autodesk $200M largest disclosed); $5B valuation = Bloomberg-reported talks only. <a href="https://techcrunch.com/2026/02/18/world-labs-lands-200m-from-autodesk-to-bring-world-models-into-3d-workflows/">techcrunch.com</a></li>
+      <li><span class="vstat weak">Demoted</span> Shopify, Sep 2020 tweet — "94% higher conversion" for interactions with 3D/AR content; internal, interaction-conditioned, no methodology; controlled Shopify case studies show 27&ndash;65%. <a href="https://x.com/Shopify/status/1306973590814949376">x.com</a></li>
+      <li><span class="vstat weak">Contested</span> SNS Insider — spatial computing market ~$103-169B (2025) to ~$1.2T (2035); analyst forecast. <a href="https://finance.yahoo.com/news/spatial-computing-platform-market-hit-040900297.html">finance.yahoo.com</a></li>
+    </ul>
+  </div>
+
+  <div class="footer">Storm Research v2 &middot; 20/20 citations (6 clusters) independently verified against primary sources, July 3, 2026 &middot; 0 fabricated, 4 corrected, 2 demoted &middot; Reliability = evidence quality, not author confidence</div>
+
+</div>
+</body>
+</html>
